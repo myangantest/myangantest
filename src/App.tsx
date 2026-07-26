@@ -16,6 +16,7 @@ import OnboardingView from './components/views/OnboardingView';
 import FavoritesView from './components/views/FavoritesView';
 import BrokersView from './components/views/BrokersView';
 import AdminView from './components/views/AdminView';
+import AdminLoginView from './components/views/AdminLoginView';
 import WaitlistView from './components/views/WaitlistView';
 import CompareView from './components/views/CompareView';
 import LeaseAgreementView from './components/views/LeaseAgreementView';
@@ -435,15 +436,42 @@ export default function App() {
             }
           />
           <Route
+            path="/admin/login"
+            element={
+              <>
+                <Helmet>
+                  <title>Admin Login | MyAngan</title>
+                  <meta name="robots" content="noindex, nofollow" />
+                </Helmet>
+                <AdminLoginView navigateTo={navigateTo} onAdminLoginSuccess={handleAuthSuccess} />
+              </>
+            }
+          />
+          <Route
+            path="/admin/dashboard"
+            element={
+              <>
+                <Helmet>
+                  <title>Admin Dashboard | MyAngan</title>
+                  <meta name="robots" content="noindex, nofollow" />
+                </Helmet>
+                <AdminView navigateTo={navigateTo} currentUser={currentUser} />
+              </>
+            }
+          />
+          <Route
             path="/admin"
             element={
               <>
                 <Helmet>
                   <title>Admin Panel | MyAngan</title>
-                  <meta name="description" content="Manage users, listings, verifications and system operations for MyAngan." />
-                  <link rel="canonical" href="https://myangan.com/admin" />
+                  <meta name="robots" content="noindex, nofollow" />
                 </Helmet>
-                <AdminView navigateTo={navigateTo} currentUser={currentUser} />
+                {currentUser?.role === 'admin' || currentUser?.account_category === 'admin' ? (
+                  <AdminView navigateTo={navigateTo} currentUser={currentUser} />
+                ) : (
+                  <AdminLoginView navigateTo={navigateTo} onAdminLoginSuccess={handleAuthSuccess} />
+                )}
               </>
             }
           />

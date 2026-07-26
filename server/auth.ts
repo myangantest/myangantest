@@ -924,3 +924,217 @@ authRouter.post('/password-reset/complete', async (req: Request, res: Response):
     res.status(500).json({ error: err.message || 'Failed to update password.' });
   }
 });
+
+// ========================================================
+// ADMINISTRATIVE AUTHENTICATION & MANAGEMENT ENDPOINTS
+// ========================================================
+
+async function requireAdminAuth(req: any, res: any, next: any) {
+  try {
+    const authHeader = req.headers['authorization'];
+    const userIdHeader = req.headers['x-user-id'];
+    let email = req.headers['x-user-email'];
+
+    let userId = userIdHeader;
+
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.split(' ')[1];
+      if (token.includes(':')) {
+        const [tokEmail, tokRole] = token.split(':');
+        if (tokRole === 'admin') {
+          email = tokEmail;
+        }
+      }
+    }
+
+    if (!userId && !email) {
+      res.status(401).json({ error: 'Authentication required for admin access.' });
+      return;
+    }
+
+    let user = null;
+    if (userId) {
+      user = await dbServiceServer.getUserById(userId);
+    } else if (email) {
+      user = await dbServiceServer.getUserByEmail(email);
+    }
+
+    if (!user) {
+      res.status(401).json({ error: 'Authentication required for admin access.' });
+      return;
+    }
+
+    if (user.role !== 'admin' && user.account_category !== 'admin') {
+      res.status(403).json({ error: 'Forbidden: Invalid credentials or insufficient access.' });
+      return;
+    }
+
+    req.adminUser = user;
+    next();
+  } catch (err) {
+    res.status(401).json({ error: 'Authentication failed.' });
+  }
+}
+
+authRouter.post('/admin/login', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    res.status(400).json({ error: 'Email and password are required.' });
+    return;
+  }
+
+  const cleanEmail = email.trim().toLowerCase();
+
+  try {
+    const user = await dbServiceServer.getUserByEmail(cleanEmail);
+
+    if (!user || (user.role !== 'admin' && user.account_category !== 'admin')) {
+      await dbServiceServer.createAuditLog({
+        action: 'admin_login_failure',
+        target_type: 'user',
+        details: { email: cleanEmail, reason: 'Non-admin user or user not found' },
+        ip_address: (req.headers['x-forwarded-for'] as string) || req.ip || '127.0.0.1',
+      });
+      res.status(403).json({ error: 'Invalid credentials or insufficient access.' });
+      return;
+    }
+
+    const isValidPass = await dbServiceServer.verifyPasswordForMock(cleanEmail, password);
+    if (!isValidPass) {
+      await dbServiceServer.createAuditLog({
+        actor_id: user.id,
+        action: 'admin_login_failure',
+        target_type: 'user',
+        target_id: user.id,
+        details: { email: cleanEmail, reason: 'Invalid password' },
+        ip_address: (req.headers['x-forwarded-for'] as string) || req.ip || '127.0.0.1',
+      });
+      res.status(403).json({ error: 'Invalid credentials or insufficient access.' });
+      return;
+    }
+
+    await dbServiceServer.createAuditLog({
+      actor_id: user.id,
+      action: 'admin_login_success',
+      target_type: 'user',
+      target_id: user.id,
+      ip_address: (req.headers['x-forwarded-for'] as string) || req.ip || '127.0.0.1',
+    });
+
+    res.status(200).json({
+      message: 'Admin login successful.',
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name || user.full_name || 'Admin',
+        role: 'admin',
+        account_category: 'admin',
+      },
+      token: `${cleanEmail}:admin`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Internal server error during admin login.' });
+  }
+});
+
+authRouter.get('/admin/providers', requireAdminAuth, async (req, res) => {
+  try {
+    const providers = await dbServiceServer.getPendingProviders();
+    res.status(200).json({ providers });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to fetch provider verification queue.' });
+  }
+});
+
+authRouter.post('/admin/providers/:userId/review', requireAdminAuth, async (req, res) => {
+  const { userId } = req.params;
+  const { status, notes } = req.body;
+
+  const validStatuses = ['approved', 'rejected', 'suspended', 'additional_information_required', 'under_review'];
+  if (!status || !validStatuses.includes(status)) {
+    res.status(400).json({ error: 'Invalid provider review status.' });
+    return;
+  }
+
+  if (['rejected', 'suspended', 'additional_information_required'].includes(status) && (!notes || !notes.trim())) {
+    res.status(400).json({ error: `Review notes are required when status is ${status}.` });
+    return;
+  }
+
+  try {
+    const result = await dbServiceServer.reviewProviderAccount({
+      userId,
+      reviewerId: (req as any).adminUser?.id,
+      newStatus: status,
+      notes: notes ? notes.trim() : undefined,
+    });
+
+    res.status(200).json({
+      message: `Provider status updated to ${status}.`,
+      user: result.user,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to update provider status.' });
+  }
+});
+
+authRouter.get('/admin/properties', requireAdminAuth, async (req, res) => {
+  const statusFilter = (req.query.status as string) || 'all';
+  try {
+    const properties = await dbServiceServer.getAdminProperties(statusFilter);
+    res.status(200).json({ properties });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to fetch property listings.' });
+  }
+});
+
+authRouter.post('/admin/properties/:id/review', requireAdminAuth, async (req, res) => {
+  const { id } = req.params;
+  const { action, notes } = req.body;
+
+  const validActions: Record<string, string> = {
+    approve: 'approved',
+    reject: 'rejected',
+    request_changes: 'changes_requested',
+    suspend: 'suspended',
+    restore: 'approved',
+    unpublish: 'archived',
+  };
+
+  if (!action || !validActions[action]) {
+    res.status(400).json({ error: 'Invalid property review action.' });
+    return;
+  }
+
+  const newStatus = validActions[action];
+  if (['reject', 'suspend', 'request_changes'].includes(action) && (!notes || !notes.trim())) {
+    res.status(400).json({ error: `Review notes are required for action: ${action}.` });
+    return;
+  }
+
+  try {
+    const result = await dbServiceServer.reviewPropertyListing({
+      propertyId: id,
+      reviewerId: (req as any).adminUser?.id,
+      newStatus: newStatus,
+      decision: action,
+      notes: notes ? notes.trim() : undefined,
+    });
+
+    res.status(200).json({
+      message: `Property listing updated with decision: ${action}.`,
+      property: result.property,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to update property review state.' });
+  }
+});
+
+authRouter.get('/admin/audit-logs', requireAdminAuth, async (req, res) => {
+  try {
+    const logs = await dbServiceServer.getAuditLogs();
+    res.status(200).json({ logs });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to fetch administrative audit logs.' });
+  }
+});

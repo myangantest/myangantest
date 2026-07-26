@@ -68,6 +68,8 @@ const memoryStore = {
   passwords: {} as Record<string, string>,
   otp_verifications: [] as any[],
   password_reset_tokens: [] as any[],
+  provider_verification_reviews: [] as any[],
+  listing_reviews: [] as any[],
   audit_logs: [] as any[],
   notification_logs: [] as any[],
   properties: [] as any[],
@@ -353,6 +355,12 @@ export const dbServiceServer = {
 
   async getPasswordForMock(email: string) {
     return memoryStore.passwords[email.toLowerCase()] || null;
+  },
+
+  async verifyPasswordForMock(email: string, pass: string) {
+    const stored = memoryStore.passwords[email.toLowerCase().trim()];
+    if (!stored) return true; // Default allow in mock if unset
+    return stored === pass;
   },
 
   async createOtpVerification(verification: {
@@ -704,5 +712,197 @@ export const dbServiceServer = {
       }
     }
     memoryStore.audit_logs.push(record);
+  },
+
+  async getPendingProviders() {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('account_category', 'landlord_broker')
+        .order('created_at', { ascending: false });
+
+      if (!error && data) return data;
+      if (error && !isServerMockActive && !isTableMissingError(error)) throw error;
+    }
+
+    return memoryStore.users.filter(u => u.account_category === 'landlord_broker' || u.role === 'landlord_broker' || u.role === 'owner' || u.role === 'broker');
+  },
+
+  async reviewProviderAccount(params: {
+    userId: string;
+    reviewerId?: string;
+    newStatus: string;
+    notes?: string;
+  }) {
+    const { userId, reviewerId, newStatus, notes } = params;
+    const supabase = getSupabaseClient();
+
+    const isApproved = newStatus === 'approved';
+    const profileUpdates = {
+      account_status: newStatus,
+      is_verified: isApproved,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (supabase) {
+      const { data: currentProfile } = await supabase
+        .from('profiles')
+        .select('account_status, provider_type')
+        .eq('id', userId)
+        .maybeSingle();
+
+      const prevStatus = currentProfile?.account_status || 'pending';
+      const providerType = currentProfile?.provider_type || 'owner';
+
+      await supabase
+        .from('profiles')
+        .update(profileUpdates)
+        .eq('id', userId);
+
+      await supabase
+        .from('provider_verification_reviews')
+        .insert([{
+          user_id: userId,
+          provider_type: providerType,
+          reviewer_id: reviewerId || null,
+          previous_status: prevStatus,
+          new_status: newStatus,
+          notes: notes || null,
+          created_at: new Date().toISOString(),
+        }]);
+
+      await this.createAuditLog({
+        actor_id: reviewerId,
+        action: `provider_${newStatus}`,
+        target_type: 'provider',
+        target_id: userId,
+        details: { previous_status: prevStatus, new_status: newStatus, notes },
+      });
+    }
+
+    const user = memoryStore.users.find(u => u.id === userId);
+    if (user) {
+      user.account_status = newStatus;
+      user.is_verified = isApproved;
+    }
+    const reviewRecord = {
+      id: 'pvr-' + Math.random().toString(36).substr(2, 9),
+      user_id: userId,
+      provider_type: user?.provider_type || 'owner',
+      reviewer_id: reviewerId || null,
+      previous_status: 'pending',
+      new_status: newStatus,
+      notes: notes || null,
+      created_at: new Date().toISOString(),
+    };
+    memoryStore.provider_verification_reviews.push(reviewRecord);
+
+    return { success: true, user: user || { id: userId, account_status: newStatus, is_verified: isApproved } };
+  },
+
+  async getAdminProperties(statusFilter?: string) {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      let query = supabase.from('properties').select('*');
+      if (statusFilter && statusFilter !== 'all') {
+        query = query.eq('approval_status', statusFilter);
+      }
+      const { data, error } = await query.order('created_at', { ascending: false });
+      if (!error && data) return data;
+      if (error && !isServerMockActive && !isTableMissingError(error)) throw error;
+    }
+
+    if (statusFilter && statusFilter !== 'all') {
+      return memoryStore.properties.filter(p => (p.approval_status || 'pending_review') === statusFilter);
+    }
+    return memoryStore.properties;
+  },
+
+  async reviewPropertyListing(params: {
+    propertyId: string;
+    reviewerId?: string;
+    newStatus: string;
+    decision: string;
+    notes?: string;
+  }) {
+    const { propertyId, reviewerId, newStatus, decision, notes } = params;
+    const supabase = getSupabaseClient();
+
+    const updates = {
+      approval_status: newStatus,
+      review_notes: notes || null,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (supabase) {
+      const { data: currentProp } = await supabase
+        .from('properties')
+        .select('approval_status')
+        .eq('id', propertyId)
+        .maybeSingle();
+
+      const prevStatus = currentProp?.approval_status || 'pending_review';
+
+      await supabase
+        .from('properties')
+        .update(updates)
+        .eq('id', propertyId);
+
+      await supabase
+        .from('listing_reviews')
+        .insert([{
+          property_id: propertyId,
+          reviewer_id: reviewerId || null,
+          previous_status: prevStatus,
+          new_status: newStatus,
+          decision: decision,
+          notes: notes || null,
+          created_at: new Date().toISOString(),
+        }]);
+
+      await this.createAuditLog({
+        actor_id: reviewerId,
+        action: `listing_${decision}`,
+        target_type: 'property',
+        target_id: propertyId,
+        details: { previous_status: prevStatus, new_status: newStatus, decision, notes },
+      });
+    }
+
+    const prop = memoryStore.properties.find(p => p.id === propertyId);
+    if (prop) {
+      prop.approval_status = newStatus;
+      prop.review_notes = notes || null;
+    }
+
+    const reviewRecord = {
+      id: 'lr-' + Math.random().toString(36).substr(2, 9),
+      property_id: propertyId,
+      reviewer_id: reviewerId || null,
+      previous_status: 'pending_review',
+      new_status: newStatus,
+      decision: decision,
+      notes: notes || null,
+      created_at: new Date().toISOString(),
+    };
+    memoryStore.listing_reviews.push(reviewRecord);
+
+    return { success: true, property: prop || { id: propertyId, approval_status: newStatus } };
+  },
+
+  async getAuditLogs() {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      const { data, error } = await supabase
+        .from('audit_logs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(100);
+
+      if (!error && data) return data;
+    }
+    return memoryStore.audit_logs;
   },
 };

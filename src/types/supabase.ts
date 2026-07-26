@@ -1638,6 +1638,61 @@ export type Database = {
         }
         Relationships: []
       }
+      listing_reviews: {
+        Row: {
+          created_at: string
+          decision: string
+          id: string
+          new_status: string
+          notes: string | null
+          previous_status: string | null
+          property_id: string
+          reviewer_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          decision: string
+          id?: string
+          new_status: string
+          notes?: string | null
+          previous_status?: string | null
+          property_id: string
+          reviewer_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          decision?: string
+          id?: string
+          new_status?: string
+          notes?: string | null
+          previous_status?: string | null
+          property_id?: string
+          reviewer_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "listing_reviews_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "properties"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "listing_reviews_reviewer_id_fkey"
+            columns: ["reviewer_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "listing_reviews_reviewer_id_fkey"
+            columns: ["reviewer_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       maintenance_ticket_comments: {
         Row: {
           author_id: string
@@ -2199,6 +2254,7 @@ export type Database = {
         Row: {
           address: string
           amenities: string[]
+          approval_status: string
           bathrooms: number
           bedrooms: number
           city: string
@@ -2214,6 +2270,7 @@ export type Database = {
           longitude: number | null
           owner_id: string
           rent_amount: number
+          review_notes: string | null
           status: Database["public"]["Enums"]["property_status"]
           title: string
           updated_at: string
@@ -2221,6 +2278,7 @@ export type Database = {
         Insert: {
           address: string
           amenities?: string[]
+          approval_status?: string
           bathrooms: number
           bedrooms: number
           city: string
@@ -2236,6 +2294,7 @@ export type Database = {
           longitude?: number | null
           owner_id: string
           rent_amount: number
+          review_notes?: string | null
           status?: Database["public"]["Enums"]["property_status"]
           title: string
           updated_at?: string
@@ -2243,6 +2302,7 @@ export type Database = {
         Update: {
           address?: string
           amenities?: string[]
+          approval_status?: string
           bathrooms?: number
           bedrooms?: number
           city?: string
@@ -2258,6 +2318,7 @@ export type Database = {
           longitude?: number | null
           owner_id?: string
           rent_amount?: number
+          review_notes?: string | null
           status?: Database["public"]["Enums"]["property_status"]
           title?: string
           updated_at?: string
@@ -2447,6 +2508,68 @@ export type Database = {
           {
             foreignKeyName: "property_verification_requests_reviewed_by_fkey"
             columns: ["reviewed_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      provider_verification_reviews: {
+        Row: {
+          created_at: string
+          id: string
+          new_status: string
+          notes: string | null
+          previous_status: string | null
+          provider_type: string
+          reviewer_id: string | null
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          new_status: string
+          notes?: string | null
+          previous_status?: string | null
+          provider_type: string
+          reviewer_id?: string | null
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          new_status?: string
+          notes?: string | null
+          previous_status?: string | null
+          provider_type?: string
+          reviewer_id?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "provider_verification_reviews_reviewer_id_fkey"
+            columns: ["reviewer_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "provider_verification_reviews_reviewer_id_fkey"
+            columns: ["reviewer_id"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "provider_verification_reviews_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "provider_verification_reviews_user_id_fkey"
+            columns: ["user_id"]
             isOneToOne: false
             referencedRelation: "users"
             referencedColumns: ["id"]

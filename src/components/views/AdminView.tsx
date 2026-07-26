@@ -1,14 +1,17 @@
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
+ * 
+ * Complete Administrator Dashboard (/admin/dashboard)
  */
 
 import React, { useState, useEffect } from 'react';
-import { Property, Lead, WaitlistEntry, UserProfile, UserRole } from '../../types';
+import { 
+  Shield, CheckCircle2, AlertTriangle, Eye, Check, X, Users, Home, Clock, 
+  Search, RefreshCw, FileText, Activity, AlertCircle, RotateCcw, Ban, Edit3 
+} from 'lucide-react';
 import { dbService } from '../../lib/db';
-import { Shield, CheckCircle2, AlertTriangle, Eye, Check, X, FileSpreadsheet, Users, Home, Clock, MessageSquare, Phone, Globe, Database } from 'lucide-react';
-import SeoAdminView from './SeoAdminView';
-import MigrationView from './MigrationView';
+import { UserProfile, Property } from '../../types';
 
 interface AdminViewProps {
   navigateTo: (route: string, params?: any) => void;
@@ -16,28 +19,39 @@ interface AdminViewProps {
 }
 
 export default function AdminView({ navigateTo, currentUser }: AdminViewProps) {
+  const [activeTab, setActiveTab] = useState<'providers' | 'pending_listings' | 'approved_listings' | 'rejected_listings' | 'suspended_listings' | 'audit_logs'>('providers');
+  
+  const [providers, setProviders] = useState<any[]>([]);
   const [properties, setProperties] = useState<Property[]>([]);
-  const [leads, setLeads] = useState<Lead[]>([]);
-  const [waitlist, setWaitlist] = useState<WaitlistEntry[]>([]);
+  const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  // Active Admin Sub-tab
-  const [activeTab, setActiveTab] = useState<'properties' | 'leads' | 'waitlist' | 'seo' | 'migration'>('properties');
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  
+  const [searchQuery, setSearchQuery] = useState('');
+  
+  // Modal / Review action state
+  const [selectedItem, setSelectedItem] = useState<any | null>(null);
+  const [reviewAction, setReviewAction] = useState<string | null>(null);
+  const [reviewNotes, setReviewNotes] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const fetchAdminData = async () => {
+    if (!currentUser || ((currentUser.role as any) !== 'admin' && (currentUser.account_category as any) !== 'admin')) return;
+
     setLoading(true);
     setError(null);
     try {
-      const pData = await dbService.getAdminAllProperties();
-      const lData = await dbService.getLeadsForOwnerOrAdmin('', 'admin');
-      const wData = await dbService.getWaitlistEntries();
-      
-      setProperties(pData);
-      setLeads(lData);
-      setWaitlist(wData);
+      const pData = await dbService.adminGetPendingProviders(currentUser.email);
+      const propsData = await dbService.adminGetProperties(currentUser.email, 'all');
+      const logsData = await dbService.adminGetAuditLogs(currentUser.email);
+
+      setProviders(pData);
+      setProperties(propsData);
+      setAuditLogs(logsData);
     } catch (err: any) {
-      console.error(err);
+      console.error('[Admin Dashboard Error]', err);
       setError('Failed to fetch administrator data registries.');
     } finally {
       setLoading(false);
@@ -46,315 +60,454 @@ export default function AdminView({ navigateTo, currentUser }: AdminViewProps) {
 
   useEffect(() => {
     window.scrollTo({ top: 0 });
-    // Check admin permissions
-    if (!currentUser || currentUser.role !== 'admin') {
-      navigateTo('auth');
+    if (!currentUser || ((currentUser.role as any) !== 'admin' && (currentUser.account_category as any) !== 'admin')) {
+      navigateTo('admin-login');
       return;
     }
     fetchAdminData();
   }, [currentUser]);
 
-  const handleToggleVerify = async (propertyId: string, currentVerified: boolean) => {
+  const handleProviderReview = async () => {
+    if (!selectedItem || !reviewAction) return;
+
+    if (['rejected', 'suspended', 'additional_information_required'].includes(reviewAction) && !reviewNotes.trim()) {
+      alert('Review notes are required for this decision.');
+      return;
+    }
+
+    setIsSubmitting(true);
     try {
-      await dbService.updateProperty(propertyId, { is_verified: !currentVerified });
-      // Update local state
-      setProperties(prev => prev.map(p => p.id === propertyId ? { ...p, is_verified: !currentVerified } : p));
-    } catch (err) {
-      console.error(err);
-      alert('Failed to toggle property verification.');
+      await dbService.adminReviewProvider(currentUser!.email, selectedItem.id, reviewAction, reviewNotes);
+      setSuccessMessage(`Provider account status updated to "${reviewAction.replace('_', ' ')}".`);
+      setSelectedItem(null);
+      setReviewAction(null);
+      setReviewNotes('');
+      await fetchAdminData();
+    } catch (err: any) {
+      alert(err.message || 'Failed to update provider account status.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  const getRoleLabel = (role: string) => {
-    if (role === 'corporate_hr') return 'Corporate HR';
-    if (role === 'landlord') return 'Landlord';
-    return 'Real Estate Broker';
+  const handlePropertyReview = async () => {
+    if (!selectedItem || !reviewAction) return;
+
+    if (['reject', 'suspend', 'request_changes'].includes(reviewAction) && !reviewNotes.trim()) {
+      alert('Review notes are required for this decision.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      await dbService.adminReviewProperty(currentUser!.email, selectedItem.id, reviewAction, reviewNotes);
+      setSuccessMessage(`Property listing decision "${reviewAction.replace('_', ' ')}" executed successfully.`);
+      setSelectedItem(null);
+      setReviewAction(null);
+      setReviewNotes('');
+      await fetchAdminData();
+    } catch (err: any) {
+      alert(err.message || 'Failed to update property review status.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  if (!currentUser || currentUser.role !== 'admin') return null;
+  if (!currentUser || ((currentUser.role as any) !== 'admin' && (currentUser.account_category as any) !== 'admin')) {
+    return null;
+  }
+
+  const filteredProviders = providers.filter(p => 
+    p.email?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    p.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    p.full_name?.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  const filteredProperties = (statusFilter: string) => {
+    return properties.filter(p => {
+      const matchStatus = statusFilter === 'all' ? true : (p.approval_status || 'pending_review') === statusFilter;
+      const matchSearch = p.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                          p.city.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                          p.locality.toLowerCase().includes(searchQuery.toLowerCase());
+      return matchStatus && matchSearch;
+    });
+  };
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-8">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-8 bg-slate-900 min-h-screen text-slate-100">
       {/* Header */}
-      <div className="border-b border-slate-100 pb-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+      <div className="border-b border-slate-800 pb-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h1 className="text-3xl font-display font-bold text-slate-900 tracking-tight flex items-center gap-2">
+          <h1 className="text-3xl font-display font-bold text-white tracking-tight flex items-center gap-3">
             <Shield className="w-8 h-8 text-orange-500" />
-            Super Admin Portal
+            Admin Operations Console
           </h1>
-          <p className="text-xs sm:text-sm text-slate-500 mt-1 font-mono uppercase tracking-wider">
-            Secured Database Registry Management Console
+          <p className="text-xs text-slate-400 mt-1 font-mono uppercase tracking-wider">
+            Internal Verification &amp; Property Listing Governance
           </p>
         </div>
 
-        {/* Dynamic Sync Trigger */}
         <button
           onClick={fetchAdminData}
-          className="px-4 py-2 border border-slate-200 hover:bg-slate-50 text-slate-600 rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition-colors"
+          disabled={loading}
+          className="px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center gap-2 transition-colors cursor-pointer"
         >
-          <RefreshIcon className="w-3.5 h-3.5" />
-          <span>Synchronize Tables</span>
+          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+          <span>Synchronize Queues</span>
         </button>
       </div>
 
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 text-xs p-4 rounded-xl">
-          {error}
+      {/* Success Notification */}
+      {successMessage && (
+        <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-400 text-sm flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+            <span>{successMessage}</span>
+          </div>
+          <button onClick={() => setSuccessMessage(null)} className="text-emerald-400 hover:text-emerald-300">
+            <X className="w-4 h-4" />
+          </button>
         </div>
       )}
 
-      {/* Admin Bento Quick Counts */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+      {/* Navigation Sub-tabs */}
+      <div className="flex flex-wrap gap-2 border-b border-slate-800 pb-3">
         <button
-          onClick={() => setActiveTab('properties')}
-          className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
-            activeTab === 'properties'
-              ? 'bg-[#0F1F3D] text-white border-[#0F1F3D]'
-              : 'bg-white border-slate-100 text-slate-700 hover:bg-slate-50'
+          onClick={() => setActiveTab('providers')}
+          className={`px-4 py-2.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer ${
+            activeTab === 'providers' ? 'bg-orange-500 text-white shadow-lg shadow-orange-500/20' : 'bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-white'
           }`}
         >
-          <Home className="w-5 h-5 text-orange-500 mb-2" />
-          <span className="text-[10px] uppercase font-mono block tracking-wider opacity-85">Manage Listings</span>
-          <span className="text-2xl font-display font-extrabold block">{properties.length}</span>
-          <span className="text-[9px] text-slate-400 font-mono block mt-1">
-            {properties.filter(p => !p.is_verified).length} awaiting approval
-          </span>
+          <Users className="w-4 h-4" />
+          <span>Owner/Broker Reviews ({providers.filter(p => p.account_status === 'pending_verification' || !p.account_status).length})</span>
         </button>
 
         <button
-          onClick={() => setActiveTab('leads')}
-          className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
-            activeTab === 'leads'
-              ? 'bg-[#0F1F3D] text-white border-[#0F1F3D]'
-              : 'bg-white border-slate-100 text-slate-700 hover:bg-slate-50'
+          onClick={() => setActiveTab('pending_listings')}
+          className={`px-4 py-2.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer ${
+            activeTab === 'pending_listings' ? 'bg-orange-500 text-white shadow-lg shadow-orange-500/20' : 'bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-white'
           }`}
         >
-          <MessageSquare className="w-5 h-5 text-orange-500 mb-2" />
-          <span className="text-[10px] uppercase font-mono block tracking-wider opacity-85">Global Leads</span>
-          <span className="text-2xl font-display font-extrabold block">{leads.length}</span>
-          <span className="text-[9px] text-slate-400 font-mono block mt-1">Direct customer logs</span>
+          <Clock className="w-4 h-4" />
+          <span>Pending Listings ({properties.filter(p => (p.approval_status || 'pending_review') === 'pending_review').length})</span>
         </button>
 
         <button
-          onClick={() => setActiveTab('waitlist')}
-          className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
-            activeTab === 'waitlist'
-              ? 'bg-[#0F1F3D] text-white border-[#0F1F3D]'
-              : 'bg-white border-slate-100 text-slate-700 hover:bg-slate-50'
+          onClick={() => setActiveTab('approved_listings')}
+          className={`px-4 py-2.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer ${
+            activeTab === 'approved_listings' ? 'bg-orange-500 text-white shadow-lg shadow-orange-500/20' : 'bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-white'
           }`}
         >
-          <Users className="w-5 h-5 text-orange-500 mb-2" />
-          <span className="text-[10px] uppercase font-mono block tracking-wider opacity-85">Launch Waitlist</span>
-          <span className="text-2xl font-display font-extrabold block">{waitlist.length}</span>
-          <span className="text-[9px] text-slate-400 font-mono block mt-1">B2B & corporate contacts</span>
+          <Home className="w-4 h-4" />
+          <span>Approved Listings ({properties.filter(p => (p.approval_status || 'pending_review') === 'approved').length})</span>
         </button>
 
         <button
-          onClick={() => setActiveTab('seo')}
-          className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
-            activeTab === 'seo'
-              ? 'bg-[#0F1F3D] text-white border-[#0F1F3D]'
-              : 'bg-white border-slate-100 text-slate-700 hover:bg-slate-50'
+          onClick={() => setActiveTab('rejected_listings')}
+          className={`px-4 py-2.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer ${
+            activeTab === 'rejected_listings' ? 'bg-orange-500 text-white shadow-lg shadow-orange-500/20' : 'bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-white'
           }`}
         >
-          <Globe className="w-5 h-5 text-orange-500 mb-2" />
-          <span className="text-[10px] uppercase font-mono block tracking-wider opacity-85">SEO Management</span>
-          <span className="text-2xl font-display font-extrabold block">15</span>
-          <span className="text-[9px] text-slate-400 font-mono block mt-1">Active search directories</span>
+          <X className="w-4 h-4" />
+          <span>Rejected Listings ({properties.filter(p => (p.approval_status || 'pending_review') === 'rejected' || (p.approval_status || 'pending_review') === 'changes_requested').length})</span>
         </button>
 
         <button
-          onClick={() => setActiveTab('migration')}
-          className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
-            activeTab === 'migration'
-              ? 'bg-[#0F1F3D] text-white border-[#0F1F3D]'
-              : 'bg-white border-slate-100 text-slate-700 hover:bg-slate-50'
+          onClick={() => setActiveTab('suspended_listings')}
+          className={`px-4 py-2.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer ${
+            activeTab === 'suspended_listings' ? 'bg-orange-500 text-white shadow-lg shadow-orange-500/20' : 'bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-white'
           }`}
         >
-          <Database className="w-5 h-5 text-orange-500 mb-2" />
-          <span className="text-[10px] uppercase font-mono block tracking-wider opacity-85 font-bold">Data Migration</span>
-          <span className="text-2xl font-display font-extrabold block">LocalStorage</span>
-          <span className="text-[9px] text-slate-400 font-mono block mt-1">Audit &amp; Sync Engine</span>
+          <Ban className="w-4 h-4" />
+          <span>Suspended Listings ({properties.filter(p => (p.approval_status || 'pending_review') === 'suspended').length})</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('audit_logs')}
+          className={`px-4 py-2.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer ${
+            activeTab === 'audit_logs' ? 'bg-orange-500 text-white shadow-lg shadow-orange-500/20' : 'bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-white'
+          }`}
+        >
+          <Activity className="w-4 h-4" />
+          <span>Audit Activity ({auditLogs.length})</span>
         </button>
       </div>
 
-      {loading ? (
-        <div className="py-16 text-center text-slate-500 flex flex-col items-center gap-3">
-          <div className="w-8 h-8 border-2 border-orange-500 border-t-transparent rounded-full animate-spin"></div>
-          <p className="text-xs font-mono">Loading admin registries...</p>
-        </div>
-      ) : (
-        <div className="bg-white border border-slate-100 rounded-2xl shadow-sm overflow-hidden">
-          
-          {/* TAB 1: PROPERTIES APPROVAL TABLE */}
-          {activeTab === 'properties' && (
+      {/* Search Input */}
+      <div className="relative max-w-md">
+        <Search className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-500" />
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Search by name, title, email or locality..."
+          className="w-full pl-10 pr-4 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-orange-500"
+        />
+      </div>
+
+      {/* TAB 1: PROVIDERS */}
+      {activeTab === 'providers' && (
+        <div className="bg-slate-800/80 border border-slate-700/60 rounded-2xl p-6 space-y-6">
+          <h2 className="text-lg font-bold text-white flex items-center gap-2">
+            <Users className="w-5 h-5 text-orange-500" />
+            Owner / Broker Verification Queue
+          </h2>
+
+          {filteredProviders.length === 0 ? (
+            <div className="text-center py-12 text-slate-500 text-sm">
+              No provider accounts match the filter criteria.
+            </div>
+          ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse min-w-[700px]">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-100 text-[10px] font-mono text-slate-500 uppercase tracking-wider">
-                    <th className="py-3 px-4">Image & Title</th>
-                    <th className="py-3 px-4">Owner ID</th>
-                    <th className="py-3 px-4">Locality & City</th>
-                    <th className="py-3 px-4">Rent (INR)</th>
-                    <th className="py-3 px-4 text-center">Status Badge</th>
-                    <th className="py-3 px-4 text-right">Verification Toggle</th>
+              <table className="w-full text-left text-xs text-slate-300">
+                <thead className="bg-slate-900/60 text-slate-400 uppercase font-mono tracking-wider border-b border-slate-700">
+                  <tr>
+                    <th className="py-3 px-4">Provider Details</th>
+                    <th className="py-3 px-4">Type</th>
+                    <th className="py-3 px-4">Account Status</th>
+                    <th className="py-3 px-4">Verification</th>
+                    <th className="py-3 px-4">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-50 text-xs">
-                  {properties.map((p) => (
-                    <tr key={p.id} className="hover:bg-slate-50/50 transition-colors">
-                      <td className="py-4 px-4 font-semibold text-slate-800">
-                        <div className="flex items-center gap-3">
-                          <img src={p.image_urls[0]} alt="" className="w-12 h-10 rounded object-cover shrink-0 border" referrerPolicy="no-referrer" />
+                <tbody className="divide-y divide-slate-700/60">
+                  {filteredProviders.map(p => (
+                    <tr key={p.id} className="hover:bg-slate-700/30 transition-colors">
+                      <td className="py-4 px-4">
+                        <div className="font-semibold text-white">{p.name || p.full_name || 'Provider Account'}</div>
+                        <div className="text-slate-400">{p.email}</div>
+                      </td>
+                      <td className="py-4 px-4 uppercase font-mono text-[11px] text-orange-400">
+                        {p.provider_type || 'Owner'}
+                      </td>
+                      <td className="py-4 px-4">
+                        <span className={`px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wider ${
+                          p.account_status === 'approved' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
+                          p.account_status === 'rejected' ? 'bg-red-500/10 text-red-400 border border-red-500/20' :
+                          'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                        }`}>
+                          {p.account_status === 'approved' ? 'Owner profile reviewed' : (p.account_status || 'Verification pending')}
+                        </span>
+                      </td>
+                      <td className="py-4 px-4">
+                        {p.is_verified ? (
+                          <span className="text-emerald-400 font-semibold flex items-center gap-1">
+                            <CheckCircle2 className="w-3.5 h-3.5" /> Reviewed &amp; Verified
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 font-mono text-[11px]">Verification Pending</span>
+                        )}
+                      </td>
+                      <td className="py-4 px-4">
+                        <div className="flex items-center gap-2">
                           <button
-                            onClick={() => navigateTo('property-detail', { id: p.id })}
-                            className="font-bold text-slate-800 hover:text-orange-500 transition-colors text-left"
+                            onClick={() => { setSelectedItem(p); setReviewAction('approved'); }}
+                            className="px-3 py-1.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-lg hover:bg-emerald-500/20 font-semibold transition-colors cursor-pointer"
                           >
-                            {p.title}
+                            Approve
+                          </button>
+                          <button
+                            onClick={() => { setSelectedItem(p); setReviewAction('rejected'); }}
+                            className="px-3 py-1.5 bg-red-500/10 text-red-400 border border-red-500/20 rounded-lg hover:bg-red-500/20 font-semibold transition-colors cursor-pointer"
+                          >
+                            Reject
+                          </button>
+                          <button
+                            onClick={() => { setSelectedItem(p); setReviewAction('additional_information_required'); }}
+                            className="px-3 py-1.5 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-lg hover:bg-amber-500/20 font-semibold transition-colors cursor-pointer"
+                          >
+                            Request Info
                           </button>
                         </div>
                       </td>
-                      <td className="py-4 px-4 font-mono text-slate-400 text-[10px]">{p.owner_id.substr(0, 8)}...</td>
-                      <td className="py-4 px-4 text-slate-600 font-medium">{p.locality}, {p.city}</td>
-                      <td className="py-4 px-4 font-bold text-slate-800">₹{p.rent_amount.toLocaleString()}</td>
-                      <td className="py-4 px-4 text-center">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase ${
-                          p.status === 'active' ? 'bg-emerald-50 text-emerald-700' : 'bg-orange-50 text-orange-700'
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TAB 2-5: PROPERTY LISTINGS QUEUES */}
+      {['pending_listings', 'approved_listings', 'rejected_listings', 'suspended_listings'].includes(activeTab) && (
+        <div className="bg-slate-800/80 border border-slate-700/60 rounded-2xl p-6 space-y-6">
+          <h2 className="text-lg font-bold text-white flex items-center gap-2 capitalize">
+            <Home className="w-5 h-5 text-orange-500" />
+            {activeTab.replace('_', ' ')} Queue
+          </h2>
+
+          {(() => {
+            const statusMap: Record<string, string> = {
+              pending_listings: 'pending_review',
+              approved_listings: 'approved',
+              rejected_listings: 'rejected',
+              suspended_listings: 'suspended',
+            };
+            const propsList = filteredProperties(statusMap[activeTab]);
+
+            if (propsList.length === 0) {
+              return (
+                <div className="text-center py-12 text-slate-500 text-sm">
+                  No property listings in this queue.
+                </div>
+              );
+            }
+
+            return (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {propsList.map(prop => (
+                  <div key={prop.id} className="bg-slate-900 border border-slate-700/80 rounded-xl overflow-hidden flex flex-col justify-between p-4 space-y-4">
+                    <div>
+                      <div className="relative h-40 rounded-lg overflow-hidden mb-3 bg-slate-800">
+                        <img
+                          src={prop.image_urls?.[0] || 'https://images.unsplash.com/photo-1560518883-ce09059eeffa?auto=format&fit=crop&w=800&q=80'}
+                          alt={prop.title}
+                          className="w-full h-full object-cover"
+                        />
+                        <span className={`absolute top-2 right-2 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                          (prop.approval_status || 'pending_review') === 'approved' ? 'bg-emerald-500 text-white' :
+                          (prop.approval_status || 'pending_review') === 'rejected' ? 'bg-red-500 text-white' :
+                          'bg-amber-500 text-slate-900'
                         }`}>
-                          {p.status}
+                          {prop.approval_status || 'pending_review'}
                         </span>
-                      </td>
-                      <td className="py-4 px-4 text-right">
+                      </div>
+                      <h3 className="font-bold text-white text-sm line-clamp-1">{prop.title}</h3>
+                      <p className="text-xs text-slate-400">{prop.locality}, {prop.city}</p>
+                      <p className="text-sm font-bold text-emerald-400 mt-2">₹{prop.rent_amount.toLocaleString('en-IN')}/month</p>
+                      {prop.review_notes && (
+                        <div className="mt-2 text-[11px] text-amber-300 bg-amber-500/10 p-2 rounded border border-amber-500/20">
+                          <strong>Admin Notes:</strong> {prop.review_notes}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap gap-2 pt-2 border-t border-slate-800">
+                      {activeTab === 'pending_listings' && (
+                        <>
+                          <button
+                            onClick={() => { setSelectedItem(prop); setReviewAction('approve'); }}
+                            className="flex-1 py-1.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-lg hover:bg-emerald-500/20 text-xs font-semibold cursor-pointer"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            onClick={() => { setSelectedItem(prop); setReviewAction('reject'); }}
+                            className="flex-1 py-1.5 bg-red-500/10 text-red-400 border border-red-500/20 rounded-lg hover:bg-red-500/20 text-xs font-semibold cursor-pointer"
+                          >
+                            Reject
+                          </button>
+                          <button
+                            onClick={() => { setSelectedItem(prop); setReviewAction('request_changes'); }}
+                            className="w-full py-1.5 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-lg hover:bg-amber-500/20 text-xs font-semibold cursor-pointer"
+                          >
+                            Request Changes
+                          </button>
+                        </>
+                      )}
+
+                      {activeTab === 'approved_listings' && (
                         <button
-                          onClick={() => handleToggleVerify(p.id, p.is_verified)}
-                          className={`px-3 py-1.5 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
-                            p.is_verified
-                              ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
-                              : 'bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100'
-                          }`}
+                          onClick={() => { setSelectedItem(prop); setReviewAction('suspend'); }}
+                          className="w-full py-1.5 bg-red-500/10 text-red-400 border border-red-500/20 rounded-lg hover:bg-red-500/20 text-xs font-semibold cursor-pointer"
                         >
-                          {p.is_verified ? '✓ Approved/Verified' : 'Verify Listing'}
+                          Suspend Listing
                         </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+                      )}
 
-          {/* TAB 2: GLOBAL LEADS LOGS */}
-          {activeTab === 'leads' && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse min-w-[700px]">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-100 text-[10px] font-mono text-slate-500 uppercase tracking-wider">
-                    <th className="py-3 px-4">Lead Inquirer Name</th>
-                    <th className="py-3 px-4">Phone Number</th>
-                    <th className="py-3 px-4">Associated Listing</th>
-                    <th className="py-3 px-4">Message Context</th>
-                    <th className="py-3 px-4 text-right">Inquiry Date</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-50 text-xs">
-                  {leads.map((l) => (
-                    <tr key={l.id} className="hover:bg-slate-50/50 transition-colors">
-                      <td className="py-4 px-4 font-bold text-slate-800">{l.name}</td>
-                      <td className="py-4 px-4 font-mono text-slate-600">
-                        <a href={`tel:${l.phone}`} className="hover:underline text-blue-600 flex items-center gap-1">
-                          <Phone className="w-3.5 h-3.5 shrink-0 text-slate-400" /> {l.phone}
-                        </a>
-                      </td>
-                      <td className="py-4 px-4 font-semibold text-slate-700">
+                      {(activeTab === 'rejected_listings' || activeTab === 'suspended_listings') && (
                         <button
-                          onClick={() => navigateTo('property-detail', { id: l.property_id })}
-                          className="hover:text-orange-500 hover:underline text-left"
+                          onClick={() => { setSelectedItem(prop); setReviewAction('restore'); }}
+                          className="w-full py-1.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-lg hover:bg-emerald-500/20 text-xs font-semibold cursor-pointer"
                         >
-                          {l.property_title || 'View Property'}
+                          Restore Listing
                         </button>
-                      </td>
-                      <td className="py-4 px-4 text-slate-500 max-w-xs truncate italic">"{l.message}"</td>
-                      <td className="py-4 px-4 text-right font-mono text-slate-400 text-[10px]">
-                        {new Date(l.created_at).toLocaleDateString()}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+        </div>
+      )}
 
-          {/* TAB 3: WAITLIST APPLICATIONS */}
-          {activeTab === 'waitlist' && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse min-w-[500px]">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-100 text-[10px] font-mono text-slate-500 uppercase tracking-wider">
-                    <th className="py-3 px-4">Applicant Contact Name</th>
-                    <th className="py-3 px-4">Contact Phone or Email</th>
-                    <th className="py-3 px-4">Stakeholder Role</th>
-                    <th className="py-3 px-4 text-right">Registry Date</th>
+      {/* TAB 6: AUDIT LOGS */}
+      {activeTab === 'audit_logs' && (
+        <div className="bg-slate-800/80 border border-slate-700/60 rounded-2xl p-6 space-y-6">
+          <h2 className="text-lg font-bold text-white flex items-center gap-2">
+            <Activity className="w-5 h-5 text-orange-500" />
+            Administrative Audit Log Stream
+          </h2>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs text-slate-300">
+              <thead className="bg-slate-900/60 text-slate-400 uppercase font-mono tracking-wider border-b border-slate-700">
+                <tr>
+                  <th className="py-3 px-4">Timestamp</th>
+                  <th className="py-3 px-4">Action</th>
+                  <th className="py-3 px-4">Target Type</th>
+                  <th className="py-3 px-4">Target ID</th>
+                  <th className="py-3 px-4">Details</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-700/60">
+                {auditLogs.map((log, idx) => (
+                  <tr key={idx} className="hover:bg-slate-700/30 font-mono text-[11px]">
+                    <td className="py-3 px-4 text-slate-400">{new Date(log.created_at).toLocaleString()}</td>
+                    <td className="py-3 px-4 text-orange-400 font-bold">{log.action}</td>
+                    <td className="py-3 px-4 text-slate-300">{log.target_type || '-'}</td>
+                    <td className="py-3 px-4 text-slate-400">{log.target_id || '-'}</td>
+                    <td className="py-3 px-4 text-slate-400 truncate max-w-xs">{JSON.stringify(log.details || {})}</td>
                   </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-50 text-xs">
-                  {waitlist.map((w) => (
-                    <tr key={w.id} className="hover:bg-slate-50/50 transition-colors">
-                      <td className="py-4 px-4 font-bold text-slate-800">{w.name}</td>
-                      <td className="py-4 px-4 font-mono text-slate-700 font-semibold">{w.contact}</td>
-                      <td className="py-4 px-4">
-                        <span className="px-2.5 py-1 text-[10px] font-bold bg-orange-50 text-orange-800 border border-orange-100 rounded">
-                          {getRoleLabel(w.role)}
-                        </span>
-                      </td>
-                      <td className="py-4 px-4 text-right font-mono text-slate-400 text-[10px]">
-                        {new Date(w.created_at).toLocaleDateString()}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
-          {/* TAB 4: SEO LANDING PAGES AND METADATA */}
-          {activeTab === 'seo' && (
-            <div className="p-6">
-              <SeoAdminView />
-            </div>
-          )}
+      {/* MODAL FOR CONFIRMATION & REVIEW NOTES */}
+      {selectedItem && reviewAction && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 max-w-md w-full rounded-2xl p-6 space-y-6 shadow-2xl">
+            <h3 className="text-lg font-bold text-white capitalize">
+              Confirm Decision: {reviewAction.replace('_', ' ')}
+            </h3>
 
-          {/* TAB 5: LEGACY LOCALSTORAGE DATA MIGRATION */}
-          {activeTab === 'migration' && (
-            <div className="p-6">
-              <MigrationView currentUser={currentUser} />
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">
+                Review Notes / Reason {['rejected', 'suspended', 'request_changes', 'additional_information_required'].includes(reviewAction) ? '(Required)' : '(Optional)'}
+              </label>
+              <textarea
+                rows={4}
+                value={reviewNotes}
+                onChange={(e) => setReviewNotes(e.target.value)}
+                placeholder="Provide official review feedback..."
+                className="w-full p-3 bg-slate-800 border border-slate-700 rounded-xl text-white text-xs placeholder-slate-500 focus:outline-none focus:border-orange-500"
+              />
             </div>
-          )}
 
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => { setSelectedItem(null); setReviewAction(null); }}
+                className="flex-1 py-2.5 bg-slate-800 text-slate-300 hover:bg-slate-700 rounded-xl text-xs font-semibold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isSubmitting}
+                onClick={activeTab === 'providers' ? handleProviderReview : handlePropertyReview}
+                className="flex-1 py-2.5 bg-orange-500 text-white hover:bg-orange-600 rounded-xl text-xs font-semibold transition-colors shadow-lg shadow-orange-500/20 cursor-pointer"
+              >
+                {isSubmitting ? 'Submitting...' : 'Confirm Decision'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
-  );
-}
-
-// Small Icon Helpers
-function RefreshIcon(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg
-      {...props}
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-      <path d="M3 3v5h5" />
-      <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
-      <path d="M16 16h5v5" />
-    </svg>
   );
 }

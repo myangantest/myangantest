@@ -173,6 +173,20 @@ async function runTestSuite() {
     });
     assert(weakPasswordCompleteRes.status === 400, 'POST /api/auth/password-reset/complete rejects weak passwords with HTTP 400');
 
+    // Admin API Protection & Authentication Tests
+    const nonAdminLoginRes = await fetch(`${baseUrl}/api/admin/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'renter@example.com', password: 'password123' }),
+    });
+    assert(nonAdminLoginRes.status === 403, 'POST /api/admin/login rejects non-admin users with HTTP 403');
+
+    const unauthAdminProvidersRes = await fetch(`${baseUrl}/api/admin/providers`);
+    assert(unauthAdminProvidersRes.status === 401, 'GET /api/admin/providers rejects unauthenticated requests with HTTP 401');
+
+    const unauthAdminPropertiesRes = await fetch(`${baseUrl}/api/admin/properties`);
+    assert(unauthAdminPropertiesRes.status === 401, 'GET /api/admin/properties rejects unauthenticated requests with HTTP 401');
+
     // 6. PHASE 2 PAYMENT & EMAIL AUTOMATION TESTS
     console.log('\n6. [Phase 2 Test] Payment Gateway & Webhook Endpoints');
 

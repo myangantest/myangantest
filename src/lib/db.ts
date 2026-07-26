@@ -2203,5 +2203,75 @@ export const dbService = {
         (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       );
     }
+  },
+
+  async adminLogin(email: string, pass: string): Promise<any> {
+    const response = await fetch('/api/admin/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password: pass }),
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.error || 'Invalid credentials or insufficient access.');
+    }
+    return data;
+  },
+
+  async adminGetPendingProviders(adminEmail: string): Promise<any[]> {
+    const response = await fetch('/api/admin/providers', {
+      headers: { 'x-user-email': adminEmail },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Failed to fetch providers.');
+    return data.providers || [];
+  },
+
+  async adminReviewProvider(adminEmail: string, userId: string, status: string, notes?: string): Promise<any> {
+    const response = await fetch(`/api/admin/providers/${userId}/review`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-user-email': adminEmail,
+      },
+      body: JSON.stringify({ status, notes }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Failed to review provider.');
+    return data;
+  },
+
+  async adminGetProperties(adminEmail: string, statusFilter?: string): Promise<any[]> {
+    const query = statusFilter ? `?status=${encodeURIComponent(statusFilter)}` : '';
+    const response = await fetch(`/api/admin/properties${query}`, {
+      headers: { 'x-user-email': adminEmail },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Failed to fetch properties.');
+    return data.properties || [];
+  },
+
+  async adminReviewProperty(adminEmail: string, propertyId: string, action: string, notes?: string): Promise<any> {
+    const response = await fetch(`/api/admin/properties/${propertyId}/review`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-user-email': adminEmail,
+      },
+      body: JSON.stringify({ action, notes }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Failed to review property.');
+    return data;
+  },
+
+  async adminGetAuditLogs(adminEmail: string): Promise<any[]> {
+    const response = await fetch('/api/admin/audit-logs', {
+      headers: { 'x-user-email': adminEmail },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Failed to fetch audit logs.');
+    return data.logs || [];
   }
 };

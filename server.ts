@@ -31,6 +31,7 @@ app.use(express.json({
 
 // API Routes
 app.use("/api/auth", authRouter);
+app.use("/api/admin", authRouter);
 app.use("/api/admin", migrationRouter);
 app.use("/api/payments", paymentRouter);
 app.use("/api/operations", operationsRouter);

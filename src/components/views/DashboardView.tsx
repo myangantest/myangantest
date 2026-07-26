@@ -277,18 +277,27 @@ export default function DashboardView({ navigateTo, currentUser, onOpenMaintenan
                       <div className="space-y-1">
                         <h4 className="font-display font-bold text-slate-800 text-sm hover:text-orange-500 transition-colors">{p.title}</h4>
                         <p className="text-[11px] text-slate-500">{p.locality}, {p.city}</p>
-                        <div className="flex gap-2 items-center pt-1.5">
+                        <div className="flex flex-wrap gap-2 items-center pt-1.5">
                           {getStatusBadge(p.status)}
-                          {p.is_verified ? (
+                          <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded border uppercase ${
+                            (p as any).approval_status === 'approved' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                            (p as any).approval_status === 'rejected' ? 'bg-red-50 text-red-700 border-red-200' :
+                            (p as any).approval_status === 'changes_requested' ? 'bg-amber-50 text-amber-700 border-amber-200' :
+                            'bg-slate-100 text-slate-700 border-slate-200'
+                          }`}>
+                            Review: {(p as any).approval_status || 'pending_review'}
+                          </span>
+                          {p.is_verified && (
                             <span className="text-[9px] font-mono font-bold bg-blue-50 text-blue-600 border border-blue-100 px-1.5 py-0.5 rounded">
                               Verified
                             </span>
-                          ) : (
-                            <span className="text-[9px] font-mono font-bold bg-amber-50 text-amber-600 border border-amber-100 px-1.5 py-0.5 rounded flex items-center gap-0.5">
-                              <AlertCircle className="w-2.5 h-2.5" /> Pending Verify
-                            </span>
                           )}
                         </div>
+                        {(p as any).review_notes && (
+                          <p className="text-[11px] text-amber-700 bg-amber-50 p-1.5 rounded border border-amber-100 mt-1 font-mono">
+                            <strong>Admin Feedback:</strong> {(p as any).review_notes}
+                          </p>
+                        )}
                       </div>
                     </div>
 
