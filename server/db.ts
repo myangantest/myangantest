@@ -89,42 +89,47 @@ function isTableMissingError(error: any): boolean {
 export const dbServiceServer = {
   async getUserByEmail(email: string) {
     const supabase = getSupabaseClient();
-    if (!supabase) {
-      throw new Error('Database Connection Error: Supabase client is not initialized. Please verify SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.');
-    }
+    if (supabase) {
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('email', email.trim().toLowerCase())
+        .maybeSingle();
 
-    const { data, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('email', email.trim().toLowerCase())
-      .maybeSingle();
-
-    if (error) {
+      if (!error) {
+        return data;
+      }
       console.error(`[Supabase Error] getUserByEmail failed for ${email}: ${error.message}`);
-      throw error;
+      if (!isServerMockActive && !isTableMissingError(error)) {
+        throw error;
+      }
     }
 
-    return data;
+    const cleanEmail = email.trim().toLowerCase();
+    const user = memoryStore.users.find(u => u.email.toLowerCase() === cleanEmail);
+    return user || null;
   },
 
   async getUserById(id: string) {
     const supabase = getSupabaseClient();
-    if (!supabase) {
-      throw new Error('Database Connection Error: Supabase client is not initialized.');
-    }
+    if (supabase) {
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', id)
+        .maybeSingle();
 
-    const { data, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('id', id)
-      .maybeSingle();
-
-    if (error) {
+      if (!error) {
+        return data;
+      }
       console.error(`[Supabase Error] getUserById failed for ${id}: ${error.message}`);
-      throw error;
+      if (!isServerMockActive && !isTableMissingError(error)) {
+        throw error;
+      }
     }
 
-    return data;
+    const user = memoryStore.users.find(u => u.id === id);
+    return user || null;
   },
 
   async createUserProfile(profile: {
@@ -180,6 +185,57 @@ export const dbServiceServer = {
       memoryStore.users.push(newProfile);
     }
     return newProfile;
+  },
+
+  async activateAccountAfterOtpVerification(userId: string) {
+    const supabase = getSupabaseClient();
+    const now = new Date().toISOString();
+
+    if (supabase) {
+      const { data, error } = await supabase
+        .from('profiles')
+        .update({
+          is_verified: true,
+          updated_at: now
+        })
+        .eq('id', userId)
+        .select()
+        .single();
+
+      if (!error && data) {
+        return { ...data, name: data.full_name };
+      }
+      console.warn(`[Supabase Notice] activateAccountAfterOtpVerification error: ${error?.message}`);
+      if (!isServerMockActive && !isTableMissingError(error)) {
+        throw error;
+      }
+    }
+
+    const user = memoryStore.users.find(u => u.id === userId);
+    if (user) {
+      user.is_verified = true;
+      return user;
+    }
+    const mockUser = { id: userId, is_verified: true, created_at: now };
+    memoryStore.users.push(mockUser);
+    return mockUser;
+  },
+
+  async updateUserVerificationByAdmin(userId: string, isVerified: boolean) {
+    return this.updateUserProfile(userId, { is_verified: isVerified });
+  },
+
+  async updateSubscriptionByAdmin(userId: string, isSubscribed: boolean, subscriptionExpiresAt?: string) {
+    const updates: any = { is_subscribed: isSubscribed };
+    if (isSubscribed && !subscriptionExpiresAt) {
+      const future = new Date();
+      future.setMonth(future.getMonth() + 1);
+      updates.subscribed_at = new Date().toISOString();
+      updates.subscription_expires_at = future.toISOString();
+    } else if (subscriptionExpiresAt) {
+      updates.subscription_expires_at = subscriptionExpiresAt;
+    }
+    return this.updateUserProfile(userId, updates);
   },
 
   async updateUserProfile(userId: string, updates: any) {

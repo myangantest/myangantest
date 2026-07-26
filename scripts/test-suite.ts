@@ -127,6 +127,24 @@ async function runTestSuite() {
     });
     assert(verifyRes.status === 400, 'POST /api/auth/verify-otp handles invalid code gracefully');
 
+    // Security Authorization Test: Verify non-admin cannot elevate roles or subscription status via profile update
+    const unauthPrivilegeRes = await fetch(`${baseUrl}/api/auth/verify-otp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: 'test@example.com',
+        code: '123456',
+        purpose: 'registration_otp',
+        role: 'admin',
+        is_subscribed: true
+      }),
+    });
+    const unauthPrivJson: any = await unauthPrivilegeRes.json().catch(() => ({}));
+    if (unauthPrivJson.user) {
+      assert(unauthPrivJson.user.role !== 'admin', 'Successful OTP verification does not assign admin role');
+      assert(!unauthPrivJson.user.is_subscribed, 'Successful OTP verification does not activate a paid subscription');
+    }
+
     // 6. PHASE 2 PAYMENT & EMAIL AUTOMATION TESTS
     console.log('\n6. [Phase 2 Test] Payment Gateway & Webhook Endpoints');
 

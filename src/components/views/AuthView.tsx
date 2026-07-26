@@ -128,6 +128,7 @@ export default function AuthView({ navigateTo, onAuthSuccess, initialRole = 'ren
         body: JSON.stringify({
           email: signUpEmail.trim(),
           code: otpCode.trim(),
+          purpose: 'registration_otp',
         }),
       });
 

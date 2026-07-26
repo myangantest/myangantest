@@ -1,11 +1,12 @@
 -- Migration: 20260724000000_production_hardening.sql
 -- Production database hardening, additional fields, audit logs, payment tables, and idempotent migration logs
 
--- 1. Sensitive profile fields trigger (prevents self-escalation)
+-- 1. Sensitive profile fields trigger (prevents self-escalation while allowing server-side service_role OTP verification)
 CREATE OR REPLACE FUNCTION public.check_profile_sensitive_fields_update()
 RETURNS TRIGGER AS $$
 BEGIN
     IF (OLD.is_verified <> NEW.is_verified OR OLD.is_subscribed <> NEW.is_subscribed) 
+       AND auth.role() <> 'service_role'
        AND NOT EXISTS (
            SELECT 1 FROM public.user_roles 
            WHERE user_id = auth.uid() AND role = 'admin'

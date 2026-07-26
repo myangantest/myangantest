@@ -205,39 +205,66 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
 authRouter.post('/verify-otp', async (req: Request, res: Response): Promise<void> => {
   const { email, code, purpose = 'registration_otp' } = req.body;
 
-  if (!email || !code) {
-    res.status(400).json({ error: 'Email and 6-digit OTP code are required.' });
+  if (!email || typeof email !== 'string' || !email.trim()) {
+    res.status(400).json({ error: 'Valid email address is required.' });
+    return;
+  }
+  if (!code || typeof code !== 'string' || !/^\d{6}$/.test(code.trim())) {
+    res.status(400).json({ error: 'A valid 6-digit OTP code is required.' });
     return;
   }
 
+  const normalizedEmail = email.trim().toLowerCase();
+  const allowedPurposes = ['registration_otp', 'password_reset', 'login_otp'];
+  const validPurpose = allowedPurposes.includes(purpose) ? purpose : 'registration_otp';
+
   try {
-    const activeOtp = await dbServiceServer.getLatestOtpVerification(email, purpose);
+    // 1. Idempotency Check: if account is already verified, return success without duplicate activation
+    const existingUser = await dbServiceServer.getUserByEmail(normalizedEmail);
+    if (existingUser && existingUser.is_verified) {
+      console.log(`[Auth Audit] Account ${normalizedEmail} is already verified. Idempotent success returned.`);
+      res.status(200).json({
+        message: 'Account is already verified and active.',
+        user: {
+          id: existingUser.id,
+          email: existingUser.email,
+          name: existingUser.name,
+          role: existingUser.role,
+          is_verified: true
+        }
+      });
+      return;
+    }
+
+    // 2. Fetch latest unconsumed OTP verification record
+    const activeOtp = await dbServiceServer.getLatestOtpVerification(normalizedEmail, validPurpose);
 
     if (!activeOtp) {
+      console.warn(`[Auth Security] OTP verification failed for ${normalizedEmail}: No active OTP found for purpose=${validPurpose}.`);
       res.status(400).json({ error: 'No active verification code found for this email address. Please request a new code.' });
       return;
     }
 
     if (new Date(activeOtp.expires_at).getTime() < Date.now()) {
+      console.warn(`[Auth Security] OTP verification failed for ${normalizedEmail}: Code expired.`);
       res.status(400).json({ error: 'Verification code has expired. Please request a new code.' });
       return;
     }
 
     if (activeOtp.attempt_count >= activeOtp.max_attempts) {
+      console.warn(`[Auth Security] OTP verification failed for ${normalizedEmail}: Max attempts exceeded.`);
       res.status(429).json({ error: 'Too many incorrect attempts. For security reasons, this code is now invalid. Please request a new code.' });
       return;
     }
 
-    // Hash the submitted code to match database
+    // 3. Timing-safe comparison of HMAC code hashes (raw OTP value is never logged)
     const submittedHash = hashOTP(code.trim());
-
-    // Secure timing-safe compare
     const match = timingSafeCompare(submittedHash, activeOtp.code_hash);
 
     if (!match) {
-      // Increment attempt count
       await dbServiceServer.incrementOtpAttempts(activeOtp.id);
       const remaining = activeOtp.max_attempts - activeOtp.attempt_count - 1;
+      console.warn(`[Auth Security] Invalid OTP entered for ${normalizedEmail}. Attempts remaining: ${Math.max(0, remaining)}`);
       
       if (remaining <= 0) {
         res.status(400).json({ error: 'Incorrect code. Maximum attempts reached. This code has been locked. Please request a new code.' });
@@ -247,17 +274,23 @@ authRouter.post('/verify-otp', async (req: Request, res: Response): Promise<void
       return;
     }
 
-    // OTP match! Mark as consumed
+    // 4. Mark OTP record as consumed atomically
     await dbServiceServer.consumeOtpVerification(activeOtp.id);
 
-    // Update user status
-    const updatedUser = await dbServiceServer.updateUserProfile(activeOtp.user_id, {
-      is_verified: true
-    });
+    // 5. Perform narrow server-side activation setting ONLY is_verified: true
+    const activatedUser = await dbServiceServer.activateAccountAfterOtpVerification(activeOtp.user_id);
+
+    console.log(`[Auth Audit] Account activation successful for userId=${activeOtp.user_id}, email=${normalizedEmail}.`);
 
     res.status(200).json({
       message: 'Account successfully verified and activated.',
-      user: updatedUser
+      user: {
+        id: activatedUser?.id || activeOtp.user_id,
+        email: normalizedEmail,
+        name: activatedUser?.name || activatedUser?.full_name || 'User',
+        role: activatedUser?.role || 'renter',
+        is_verified: true
+      }
     });
 
   } catch (err: any) {
