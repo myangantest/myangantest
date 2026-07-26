@@ -1,0 +1,10 @@
+# www.robotstxt.org/
+# Friendly to all search crawlers, pointing to the sitemap file
+
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /dashboard
+Disallow: /auth
+
+Sitemap: https://myangan.com/sitemap.xml
