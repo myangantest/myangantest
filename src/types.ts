@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export type UserRole = 'renter' | 'landlord_broker' | 'admin';
+export type UserRole = 'renter' | 'owner' | 'broker' | 'landlord_broker' | 'admin';
 export type FurnishingStatus = 'unfurnished' | 'semi_furnished' | 'furnished';
 export type PropertyStatus = 'active' | 'rented' | 'inactive';
 export type WaitlistRole = 'landlord' | 'broker' | 'corporate_hr';

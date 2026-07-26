@@ -3,7 +3,6 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
 
-// Load environment variables before doing anything else
 dotenv.config();
 
 import { authRouter } from "./server/auth";
@@ -11,38 +10,42 @@ import { migrationRouter } from "./server/migration";
 import { paymentRouter } from "./server/payments";
 import { operationsRouter } from "./server/operations";
 import { aiRouter } from "./server/ai";
+import { validateEnv } from "./server/env";
+
+export const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Validate environment variables
+try {
+  validateEnv();
+} catch (err) {
+  console.warn("⚠️ Environment validation notice:", err);
+}
+
+// Raw body middleware for Razorpay Webhook signature verification
+app.use(express.json({
+  verify: (req: any, res, buf) => {
+    req.rawBody = buf.toString('utf-8');
+  }
+}));
+
+// API Routes
+app.use("/api/auth", authRouter);
+app.use("/api/admin", migrationRouter);
+app.use("/api/payments", paymentRouter);
+app.use("/api/operations", operationsRouter);
+app.use("/api/ai", aiRouter);
+
+// Health Check Endpoint
+app.get("/api/health", (req, res) => {
+  res.json({
+    status: "ok",
+    mode: process.env.NODE_ENV || "development",
+    timestamp: new Date().toISOString()
+  });
+});
 
 async function startServer() {
-  const app = express();
-  const PORT = 3000;
-
-  // Raw body middleware for Razorpay Webhook signature verification
-  app.use(express.json({
-    verify: (req: any, res, buf) => {
-      req.rawBody = buf.toString('utf-8');
-    }
-  }));
-
-  // Log incoming server requests for debugging
-  app.use((req, res, next) => {
-    console.log(`[Express Server] ${req.method} ${req.url}`);
-    next();
-  });
-
-  // API routes MUST be registered first
-  app.use("/api/auth", authRouter);
-  app.use("/api/admin", migrationRouter);
-  app.use("/api/payments", paymentRouter);
-  app.use("/api/operations", operationsRouter);
-  app.use("/api/ai", aiRouter);
-  app.use("/api", authRouter);
-
-  // Simple health check endpoint
-  app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", mode: process.env.NODE_ENV || "development" });
-  });
-
-  // Vite middleware for development vs static asset delivery for production
   if (process.env.NODE_ENV !== "production") {
     console.log("[Express Server] Initializing Vite in middlewareMode (Development)...");
     const vite = await createViteServer({
@@ -59,12 +62,15 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  app.listen(PORT, () => {
     console.log(`[Express Server] MyAngan Engine running on port ${PORT}`);
   });
 }
 
-startServer().catch(err => {
-  console.error("[Express Server] Critical failure starting full-stack applet:", err);
-  process.exit(1);
-});
+// Run server only if executed directly
+if (process.env.VERCEL !== "1") {
+  startServer().catch(err => {
+    console.error("[Express Server] Critical failure starting full-stack applet:", err);
+    process.exit(1);
+  });
+}
