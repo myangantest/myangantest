@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
+    "@supabase/server": "^1.4.1",
     "@supabase/supabase-js": "^2.110.7",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
@@ -60,5 +61,4 @@
     "vite": "^6.2.3",
     "vitest": "^4.1.10"
   }
-
 }
