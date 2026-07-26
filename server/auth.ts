@@ -41,6 +41,12 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
     return;
   }
 
+  const allowedPublicRoles = ['renter', 'landlord_broker'];
+  if (!allowedPublicRoles.includes(role)) {
+    res.status(400).json({ error: 'Invalid registration role. Allowed public signup roles are renter or landlord_broker.' });
+    return;
+  }
+
   const supabase = getSupabaseClient();
   if (!supabase && !isServerMockActive) {
     res.status(503).json({
@@ -296,6 +302,49 @@ authRouter.post('/verify-otp', async (req: Request, res: Response): Promise<void
   } catch (err: any) {
     console.error('[Backend Auth] OTP verification error:', err);
     res.status(500).json({ error: err.message || 'Verification failed.' });
+  }
+});
+
+/**
+ * POST /api/auth/onboarding
+ * Post-verification onboarding for landlord_broker users to select owner or broker
+ */
+authRouter.post('/onboarding', async (req: Request, res: Response): Promise<void> => {
+  const { userId, provider_type } = req.body;
+  const headerUserId = (req.headers['x-user-id'] as string) || userId;
+
+  if (!headerUserId) {
+    res.status(401).json({ error: 'Authentication required to complete onboarding.' });
+    return;
+  }
+
+  const allowedProviderTypes = ['owner', 'broker'];
+  if (!provider_type || !allowedProviderTypes.includes(provider_type)) {
+    res.status(400).json({ error: 'Invalid provider type. Allowed values are owner or broker.' });
+    return;
+  }
+
+  try {
+    const user = await dbServiceServer.getUserById(headerUserId);
+    if (!user) {
+      res.status(404).json({ error: 'User account not found.' });
+      return;
+    }
+
+    if (user.account_category === 'renter') {
+      res.status(403).json({ error: 'Renters cannot complete landlord/broker onboarding.' });
+      return;
+    }
+
+    const updatedUser = await dbServiceServer.completeLandlordBrokerOnboarding(headerUserId, provider_type as 'owner' | 'broker');
+
+    res.status(200).json({
+      message: 'Onboarding completed successfully.',
+      user: updatedUser
+    });
+  } catch (err: any) {
+    console.error('[Backend Auth] Onboarding error:', err);
+    res.status(500).json({ error: err.message || 'Onboarding failed.' });
   }
 });
 

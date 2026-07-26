@@ -54,8 +54,10 @@ export default function AuthView({ navigateTo, onAuthSuccess, initialRole = 'ren
       const user = await dbService.signIn(signInEmail.trim(), signInPassword);
       onAuthSuccess(user);
       
-      // Redirect based on role
-      if (user.role === 'landlord_broker') {
+      // Redirect based on role and onboarding status
+      if (user.account_category === 'landlord_broker' && user.onboarding_status === 'pending') {
+        navigateTo('onboarding');
+      } else if (user.role === 'owner' || user.role === 'broker' || user.role === 'landlord_broker') {
         navigateTo('dashboard');
       } else if (user.role === 'admin') {
         navigateTo('admin');
@@ -149,8 +151,12 @@ export default function AuthView({ navigateTo, onAuthSuccess, initialRole = 'ren
       const loggedInUser = await dbService.signIn(signUpEmail.trim(), signUpPassword);
       onAuthSuccess(loggedInUser);
       
-      if (loggedInUser.role === 'landlord_broker') {
+      if (loggedInUser.account_category === 'landlord_broker' && loggedInUser.onboarding_status === 'pending') {
+        navigateTo('onboarding');
+      } else if (loggedInUser.role === 'owner' || loggedInUser.role === 'broker' || loggedInUser.role === 'landlord_broker') {
         navigateTo('dashboard');
+      } else if (loggedInUser.role === 'admin') {
+        navigateTo('admin');
       } else {
         navigateTo('properties');
       }

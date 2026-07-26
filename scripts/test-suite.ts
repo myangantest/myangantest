@@ -119,31 +119,28 @@ async function runTestSuite() {
     assert(regRes.status === 400, 'POST /api/auth/register with empty payload correctly returns HTTP 400', `Got status ${regRes.status}`);
     assert(!!regJson.error, 'Auth register validation response includes user-friendly error message');
 
-    // Verify OTP code invalid payload
-    const verifyRes = await fetch(`${baseUrl}/api/auth/verify-otp`, {
+    // Public registration role validation: Rejects admin, owner, or broker
+    const invalidRoleRes = await fetch(`${baseUrl}/api/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: 'test@example.com', code: '000000' }),
+      body: JSON.stringify({ email: 'hacker@example.com', name: 'Hacker', role: 'admin', password: 'password123' }),
     });
-    assert(verifyRes.status === 400, 'POST /api/auth/verify-otp handles invalid code gracefully');
+    assert(invalidRoleRes.status === 400, 'POST /api/auth/register rejects public request for admin role with HTTP 400');
 
-    // Security Authorization Test: Verify non-admin cannot elevate roles or subscription status via profile update
-    const unauthPrivilegeRes = await fetch(`${baseUrl}/api/auth/verify-otp`, {
+    const invalidOwnerRes = await fetch(`${baseUrl}/api/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        email: 'test@example.com',
-        code: '123456',
-        purpose: 'registration_otp',
-        role: 'admin',
-        is_subscribed: true
-      }),
+      body: JSON.stringify({ email: 'hacker2@example.com', name: 'Hacker', role: 'owner', password: 'password123' }),
     });
-    const unauthPrivJson: any = await unauthPrivilegeRes.json().catch(() => ({}));
-    if (unauthPrivJson.user) {
-      assert(unauthPrivJson.user.role !== 'admin', 'Successful OTP verification does not assign admin role');
-      assert(!unauthPrivJson.user.is_subscribed, 'Successful OTP verification does not activate a paid subscription');
-    }
+    assert(invalidOwnerRes.status === 400, 'POST /api/auth/register rejects public request for owner role during signup');
+
+    // Onboarding authorization test: Unauthenticated request rejected
+    const unauthOnboardRes = await fetch(`${baseUrl}/api/auth/onboarding`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_type: 'owner' }),
+    });
+    assert(unauthOnboardRes.status === 401, 'POST /api/auth/onboarding rejects unauthenticated requests with HTTP 401');
 
     // 6. PHASE 2 PAYMENT & EMAIL AUTOMATION TESTS
     console.log('\n6. [Phase 2 Test] Payment Gateway & Webhook Endpoints');

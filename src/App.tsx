@@ -12,6 +12,7 @@ import PropertyDetailView from './components/views/PropertyDetailView';
 import PostPropertyView from './components/views/PostPropertyView';
 import DashboardView from './components/views/DashboardView';
 import AuthView from './components/views/AuthView';
+import OnboardingView from './components/views/OnboardingView';
 import FavoritesView from './components/views/FavoritesView';
 import BrokersView from './components/views/BrokersView';
 import AdminView from './components/views/AdminView';
@@ -187,6 +188,8 @@ export default function App() {
       navigate('/post-property', { state: params });
     } else if (route === 'dashboard') {
       navigate('/dashboard', { state: params });
+    } else if (route === 'onboarding') {
+      navigate('/onboarding', { state: params });
     } else if (route === 'admin') {
       navigate('/admin', { state: params });
     } else if (route === 'waitlist') {
@@ -384,6 +387,23 @@ export default function App() {
                   navigateTo={navigateTo}
                   onAuthSuccess={handleAuthSuccess}
                   initialRole={location.state?.targetRole || 'renter'}
+                />
+              </>
+            }
+          />
+          <Route
+            path="/onboarding"
+            element={
+              <>
+                <Helmet>
+                  <title>Complete Profile Onboarding | MyAngan</title>
+                  <meta name="description" content="Select your landlord or broker profile type on MyAngan." />
+                  <link rel="canonical" href="https://myangan.com/onboarding" />
+                </Helmet>
+                <OnboardingView
+                  currentUser={currentUser}
+                  navigateTo={navigateTo}
+                  onAuthSuccess={handleAuthSuccess}
                 />
               </>
             }

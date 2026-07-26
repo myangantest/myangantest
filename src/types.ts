@@ -3,6 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+export type AccountCategory = 'renter' | 'landlord_broker';
+export type ProviderType = 'owner' | 'broker' | null;
+export type OnboardingStatus = 'pending' | 'complete';
+export type AccountStatus = 'pending_verification' | 'active' | 'suspended' | 'disabled';
 export type UserRole = 'renter' | 'owner' | 'broker' | 'landlord_broker' | 'admin';
 export type FurnishingStatus = 'unfurnished' | 'semi_furnished' | 'furnished';
 export type PropertyStatus = 'active' | 'rented' | 'inactive';
@@ -14,6 +18,11 @@ export interface UserProfile {
   phone?: string;
   role: UserRole;
   name: string;
+  account_category?: AccountCategory;
+  onboarding_status?: OnboardingStatus;
+  provider_type?: ProviderType;
+  account_status?: AccountStatus;
+  is_verified?: boolean;
   created_at: string;
   is_subscribed?: boolean;
   subscribed_at?: string;

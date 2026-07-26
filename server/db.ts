@@ -141,6 +141,10 @@ export const dbServiceServer = {
     is_verified?: boolean;
     is_subscribed?: boolean;
   }) {
+    const isLandlordBroker = profile.role === 'landlord_broker';
+    const accountCategory = isLandlordBroker ? 'landlord_broker' : 'renter';
+    const onboardingStatus = isLandlordBroker ? 'pending' : 'complete';
+
     const supabase = getSupabaseClient();
     if (supabase) {
       const { data, error } = await supabase
@@ -150,6 +154,10 @@ export const dbServiceServer = {
           email: profile.email.trim().toLowerCase(),
           full_name: profile.name,
           phone: profile.phone,
+          account_category: accountCategory,
+          onboarding_status: onboardingStatus,
+          provider_type: null,
+          account_status: 'pending_verification',
           is_verified: profile.is_verified ?? false,
           is_subscribed: profile.is_subscribed ?? false,
           updated_at: new Date().toISOString(),
@@ -157,14 +165,22 @@ export const dbServiceServer = {
         .select()
         .single();
       if (!error && data) {
-        await supabase
-          .from('user_roles')
-          .upsert({
-            user_id: profile.id,
-            role: (profile.role || 'renter') as any
-          }, { onConflict: 'user_id,role' });
+        if (!isLandlordBroker) {
+          await supabase
+            .from('user_roles')
+            .upsert({
+              user_id: profile.id,
+              role: 'renter'
+            }, { onConflict: 'user_id,role' });
+        }
 
-        return { ...data, name: data.full_name, role: profile.role || 'renter' };
+        return {
+          ...data,
+          name: data.full_name,
+          role: isLandlordBroker ? 'landlord_broker' : 'renter',
+          account_category: accountCategory,
+          onboarding_status: onboardingStatus
+        };
       }
       console.warn(`[Supabase Notice] createUserProfile write error: ${error?.message}`);
       if (!isServerMockActive && !isTableMissingError(error)) {
@@ -176,6 +192,10 @@ export const dbServiceServer = {
     const newProfile = {
       ...profile,
       email: profile.email.trim().toLowerCase(),
+      account_category: accountCategory,
+      onboarding_status: onboardingStatus,
+      provider_type: null,
+      account_status: 'pending_verification',
       is_verified: profile.is_verified ?? false,
       created_at: new Date().toISOString(),
     };
@@ -185,6 +205,52 @@ export const dbServiceServer = {
       memoryStore.users.push(newProfile);
     }
     return newProfile;
+  },
+
+  async completeLandlordBrokerOnboarding(userId: string, providerType: 'owner' | 'broker') {
+    const supabase = getSupabaseClient();
+    const now = new Date().toISOString();
+
+    if (supabase) {
+      const { data, error } = await supabase
+        .from('profiles')
+        .update({
+          provider_type: providerType,
+          onboarding_status: 'complete',
+          updated_at: now
+        })
+        .eq('id', userId)
+        .select()
+        .single();
+
+      if (!error && data) {
+        await supabase
+          .from('user_roles')
+          .upsert({ user_id: userId, role: providerType }, { onConflict: 'user_id,role' });
+
+        return {
+          ...data,
+          name: data.full_name,
+          role: providerType,
+          provider_type: providerType,
+          onboarding_status: 'complete'
+        };
+      }
+      if (!isServerMockActive && !isTableMissingError(error)) {
+        throw error;
+      }
+    }
+
+    const user = memoryStore.users.find(u => u.id === userId);
+    if (user) {
+      (user as any).provider_type = providerType;
+      (user as any).onboarding_status = 'complete';
+      user.role = providerType;
+      return user;
+    }
+    const mockUser = { id: userId, provider_type: providerType, onboarding_status: 'complete', role: providerType };
+    memoryStore.users.push(mockUser as any);
+    return mockUser;
   },
 
   async activateAccountAfterOtpVerification(userId: string) {

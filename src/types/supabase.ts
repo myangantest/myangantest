@@ -2095,40 +2095,55 @@ export type Database = {
       }
       profiles: {
         Row: {
+          account_category: string
+          account_status: string
           avatar_url: string | null
           created_at: string
           email: string
+          email_verified_at: string | null
           full_name: string
           id: string
           is_subscribed: boolean
           is_verified: boolean
+          onboarding_status: string
           phone: string | null
+          provider_type: string | null
           subscribed_at: string | null
           subscription_expires_at: string | null
           updated_at: string
         }
         Insert: {
+          account_category?: string
+          account_status?: string
           avatar_url?: string | null
           created_at?: string
           email: string
+          email_verified_at?: string | null
           full_name: string
           id: string
           is_subscribed?: boolean
           is_verified?: boolean
+          onboarding_status?: string
           phone?: string | null
+          provider_type?: string | null
           subscribed_at?: string | null
           subscription_expires_at?: string | null
           updated_at?: string
         }
         Update: {
+          account_category?: string
+          account_status?: string
           avatar_url?: string | null
           created_at?: string
           email?: string
+          email_verified_at?: string | null
           full_name?: string
           id?: string
           is_subscribed?: boolean
           is_verified?: boolean
+          onboarding_status?: string
           phone?: string | null
+          provider_type?: string | null
           subscribed_at?: string | null
           subscription_expires_at?: string | null
           updated_at?: string
@@ -2442,13 +2457,17 @@ export type Database = {
     Views: {
       users: {
         Row: {
+          account_category: string | null
+          account_status: string | null
           created_at: string | null
           email: string | null
           id: string | null
           is_subscribed: boolean | null
           is_verified: boolean | null
           name: string | null
+          onboarding_status: string | null
           phone: string | null
+          provider_type: string | null
           role: string | null
           subscribed_at: string | null
           subscription_expires_at: string | null

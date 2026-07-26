@@ -1327,27 +1327,41 @@ export const dbService = {
       if (!data.user) throw new Error('Sign up failed');
 
       // Check if profile is already created via trigger, otherwise do it manually
+      const isLandlordBroker = role === 'landlord_broker';
+      const accountCategory = isLandlordBroker ? 'landlord_broker' : 'renter';
+      const onboardingStatus = isLandlordBroker ? 'pending' : 'complete';
+
       const profile: UserProfile = {
         id: data.user.id,
         email,
         role,
         name,
         phone,
+        account_category: accountCategory,
+        onboarding_status: onboardingStatus,
         created_at: new Date().toISOString()
       };
       
-      // Upsert profile in public.profiles and public.user_roles
+      // Upsert profile in public.profiles
       await supabase.from('profiles').upsert({
         id: data.user.id,
         email,
         full_name: name,
         phone,
+        account_category: accountCategory,
+        onboarding_status: onboardingStatus,
+        provider_type: null,
+        account_status: 'pending_verification',
         updated_at: new Date().toISOString()
       });
-      await supabase.from('user_roles').upsert({
-        user_id: data.user.id,
-        role: (role || 'renter') as any
-      }, { onConflict: 'user_id,role' });
+
+      if (!isLandlordBroker) {
+        await supabase.from('user_roles').upsert({
+          user_id: data.user.id,
+          role: 'renter'
+        }, { onConflict: 'user_id,role' });
+      }
+
       return profile;
     } else if (isMockModeActive) {
       // Local Storage Mode for Development Mock Only
@@ -1399,6 +1413,58 @@ export const dbService = {
     } else {
       throw new Error('Database Configuration Error: Missing Supabase credentials (VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are required). Registration is disabled in production.');
     }
+  },
+
+  async completeOnboarding(providerType: 'owner' | 'broker'): Promise<UserProfile> {
+    const user = await this.getCurrentUser();
+    if (!user) throw new Error('Authentication required.');
+
+    if (isRealSupabaseConfigured && supabase) {
+      const { data, error } = await supabase
+        .from('profiles')
+        .update({
+          provider_type: providerType,
+          onboarding_status: 'complete',
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', user.id)
+        .select()
+        .single();
+
+      if (!error && data) {
+        await supabase.from('user_roles').upsert({ user_id: user.id, role: providerType }, { onConflict: 'user_id,role' });
+        return {
+          ...user,
+          role: providerType,
+          provider_type: providerType,
+          onboarding_status: 'complete'
+        };
+      }
+    }
+
+    try {
+      const res = await fetch('/api/auth/onboarding', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-id': user.id
+        },
+        body: JSON.stringify({ provider_type: providerType })
+      });
+      if (res.ok) {
+        const json = await res.json();
+        return json.user;
+      }
+    } catch {}
+
+    const updated = {
+      ...user,
+      role: providerType,
+      provider_type: providerType,
+      onboarding_status: 'complete' as const
+    };
+    safeLocalStorage.setItem('myangan_current_user', JSON.stringify(updated));
+    return updated;
   },
 
   async signIn(email: string, password?: string): Promise<UserProfile> {
