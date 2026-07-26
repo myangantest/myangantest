@@ -4,7 +4,7 @@
  */
 
 import nodemailer from 'nodemailer';
-import { getSupabaseClient } from './db';
+import { getSupabaseClient } from './db.js';
 
 // HTML escaping helper to prevent XSS / HTML injection in user-provided content
 export function escapeHtml(str: string): string {

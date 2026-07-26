@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { Request, Response, Router } from 'express';
-import { dbServiceServer, getSupabaseClient, isServerMockActive } from './db';
-import { sendEmail } from './email';
+import { dbServiceServer, getSupabaseClient, isServerMockActive } from './db.js';
+import { sendEmail } from './email.js';
 
 export const authRouter = Router();
 

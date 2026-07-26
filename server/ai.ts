@@ -4,8 +4,8 @@
  */
 
 import { Request, Response, Router } from 'express';
-import { getSupabaseClient } from './db';
-import { escapeHtml } from './email';
+import { getSupabaseClient } from './db.js';
+import { escapeHtml } from './email.js';
 
 export const aiRouter = Router();
 

@@ -3,12 +3,12 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-import { authRouter } from "../server/auth";
-import { migrationRouter } from "../server/migration";
-import { paymentRouter } from "../server/payments";
-import { operationsRouter } from "../server/operations";
-import { aiRouter } from "../server/ai";
-import { validateEnv } from "../server/env";
+import { authRouter } from "../server/auth.js";
+import { migrationRouter } from "../server/migration.js";
+import { paymentRouter } from "../server/payments.js";
+import { operationsRouter } from "../server/operations.js";
+import { aiRouter } from "../server/ai.js";
+import { validateEnv } from "../server/env.js";
 
 // Perform environment validation at startup
 try {

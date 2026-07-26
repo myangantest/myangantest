@@ -5,8 +5,8 @@
 
 import crypto from 'crypto';
 import { Request, Response, Router } from 'express';
-import { dbServiceServer, getSupabaseClient } from './db';
-import { sendEmail } from './email';
+import { dbServiceServer, getSupabaseClient } from './db.js';
+import { sendEmail } from './email.js';
 
 export const paymentRouter = Router();
 

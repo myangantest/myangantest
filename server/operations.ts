@@ -4,9 +4,9 @@
  */
 
 import { Request, Response, Router } from 'express';
-import { getSupabaseClient } from './db';
-import { getAuthUserFromRequest } from './payments';
-import { escapeHtml } from './email';
+import { getSupabaseClient } from './db.js';
+import { getAuthUserFromRequest } from './payments.js';
+import { escapeHtml } from './email.js';
 
 export const operationsRouter = Router();
 

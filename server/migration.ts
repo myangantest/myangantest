@@ -1,6 +1,6 @@
 import { Request, Response, Router } from 'express';
 import { z } from 'zod';
-import { dbServiceServer, getSupabaseClient, isServerMockActive } from './db';
+import { dbServiceServer, getSupabaseClient, isServerMockActive } from './db.js';
 
 export const migrationRouter = Router();
 
