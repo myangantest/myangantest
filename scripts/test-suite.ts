@@ -142,6 +142,37 @@ async function runTestSuite() {
     });
     assert(unauthOnboardRes.status === 401, 'POST /api/auth/onboarding rejects unauthenticated requests with HTTP 401');
 
+    // Password Recovery API Endpoints Validation
+    const invalidEmailRecoveryRes = await fetch(`${baseUrl}/api/auth/password-reset/request`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'invalid-email-format' }),
+    });
+    assert(invalidEmailRecoveryRes.status === 400, 'POST /api/auth/password-reset/request rejects invalid email format with HTTP 400');
+
+    const validRecoveryRequestRes = await fetch(`${baseUrl}/api/auth/password-reset/request`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'anyuser@example.com' }),
+    });
+    const validRecoveryJson: any = await validRecoveryRequestRes.json().catch(() => ({}));
+    assert(validRecoveryRequestRes.status === 200, 'POST /api/auth/password-reset/request returns HTTP 200 OK');
+    assert(validRecoveryJson.message === 'If an account exists for this email, a recovery code has been sent.', 'Password reset request returns generic message without revealing user existence');
+
+    const invalidVerifyRes = await fetch(`${baseUrl}/api/auth/password-reset/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'test@example.com', code: '000000' }),
+    });
+    assert(invalidVerifyRes.status === 400, 'POST /api/auth/password-reset/verify handles non-existent or invalid OTP gracefully');
+
+    const weakPasswordCompleteRes = await fetch(`${baseUrl}/api/auth/password-reset/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reset_token: 'fake-token', new_password: '12345678', confirm_password: '12345678' }),
+    });
+    assert(weakPasswordCompleteRes.status === 400, 'POST /api/auth/password-reset/complete rejects weak passwords with HTTP 400');
+
     // 6. PHASE 2 PAYMENT & EMAIL AUTOMATION TESTS
     console.log('\n6. [Phase 2 Test] Payment Gateway & Webhook Endpoints');
 

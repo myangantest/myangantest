@@ -1467,6 +1467,49 @@ export const dbService = {
     return updated;
   },
 
+  async requestPasswordReset(email: string): Promise<string> {
+    const res = await fetch('/api/auth/password-reset/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email.trim() }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || 'Failed to send recovery code.');
+    }
+    return data.message || 'If an account exists for this email, a recovery code has been sent.';
+  },
+
+  async verifyPasswordResetOtp(email: string, code: string): Promise<string> {
+    const res = await fetch('/api/auth/password-reset/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email.trim(), code: code.trim() }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || 'Verification failed.');
+    }
+    return data.reset_token;
+  },
+
+  async completePasswordReset(resetToken: string, newPassword: string, confirmPassword: string): Promise<string> {
+    const res = await fetch('/api/auth/password-reset/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        reset_token: resetToken,
+        new_password: newPassword,
+        confirm_password: confirmPassword,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || 'Password reset failed.');
+    }
+    return data.message || 'Your password has been changed successfully.';
+  },
+
   async signIn(email: string, password?: string): Promise<UserProfile> {
     if (!password) {
       throw new Error('Password is required.');

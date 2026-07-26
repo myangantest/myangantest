@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { Request, Response, Router } from 'express';
 import { dbServiceServer, getSupabaseClient, isServerMockActive } from './db.js';
-import { sendEmail } from './email.js';
+import { sendEmail, sendPasswordResetOtpEmail, sendPasswordChangedEmail } from './email.js';
 
 export const authRouter = Router();
 
@@ -687,5 +687,240 @@ authRouter.post('/payment/verify-razorpay', async (req: Request, res: Response):
   } catch (err: any) {
     console.error('[Backend Payment] Premium subscription verification error:', err);
     res.status(500).json({ error: err.message || 'Payment verification failed.' });
+  }
+});
+
+// Weak password blocklist
+const COMMON_WEAK_PASSWORDS = [
+  '12345678',
+  'password',
+  '123456789',
+  'qwerty123',
+  'myangan123',
+  'password123',
+  'admin12345',
+  'letmein123',
+  'welcome123',
+  '00000000',
+];
+
+/**
+ * POST /api/auth/password-reset/request
+ * Request password recovery OTP
+ * Returns generic response regardless of whether user email exists.
+ */
+authRouter.post('/password-reset/request', async (req: Request, res: Response): Promise<void> => {
+  const { email } = req.body;
+  const genericResponse = { message: 'If an account exists for this email, a recovery code has been sent.' };
+
+  if (!email || typeof email !== 'string') {
+    res.status(400).json({ error: 'Valid email address is required.' });
+    return;
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(normalizedEmail)) {
+    res.status(400).json({ error: 'Please enter a valid email address format.' });
+    return;
+  }
+
+  try {
+    // 1. Enforce 60-second resend cooldown rate limit per email
+    const lastOtp = await dbServiceServer.getLatestOtpVerification(normalizedEmail, 'password_reset');
+    if (lastOtp && lastOtp.last_sent_at) {
+      const msSinceLast = Date.now() - new Date(lastOtp.last_sent_at).getTime();
+      if (msSinceLast < 60000) {
+        const remainingSec = Math.ceil((60000 - msSinceLast) / 1000);
+        res.status(429).json({ error: `Please wait ${remainingSec} seconds before requesting another recovery code.` });
+        return;
+      }
+    }
+
+    // 2. Check if user exists (silently do nothing if user does not exist to prevent account enumeration)
+    const user = await dbServiceServer.getUserByEmail(normalizedEmail);
+    if (user) {
+      // Invalidate any unconsumed password_reset OTPs
+      await dbServiceServer.invalidateUserOtps(normalizedEmail, 'password_reset');
+
+      // Generate secure 6-digit OTP and store SHA-256 hash
+      const otpCode = generateOTP();
+      const codeHash = hashOTP(otpCode);
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 minutes
+
+      await dbServiceServer.createOtpVerification({
+        user_id: user.id,
+        email: normalizedEmail,
+        code_hash: codeHash,
+        purpose: 'password_reset',
+        expires_at: expiresAt,
+        request_ip: (req.headers['x-forwarded-for'] as string) || req.ip || '127.0.0.1',
+      });
+
+      // Dispatch SMTP email without logging OTP code
+      await sendPasswordResetOtpEmail(normalizedEmail, otpCode);
+    }
+
+    res.status(200).json(genericResponse);
+  } catch (err: any) {
+    console.error('[Backend Auth] Password reset request error:', err);
+    res.status(500).json({ error: 'Failed to process password recovery request.' });
+  }
+});
+
+/**
+ * POST /api/auth/password-reset/verify
+ * Verify password recovery OTP and issue single-use reset token
+ */
+authRouter.post('/password-reset/verify', async (req: Request, res: Response): Promise<void> => {
+  const { email, code } = req.body;
+
+  if (!email || !code || typeof code !== 'string') {
+    res.status(400).json({ error: 'Email address and 6-digit verification code are required.' });
+    return;
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  const trimmedCode = code.trim();
+
+  if (trimmedCode.length !== 6 || !/^\d{6}$/.test(trimmedCode)) {
+    res.status(400).json({ error: 'Please enter the full 6-digit verification code.' });
+    return;
+  }
+
+  try {
+    const activeOtp = await dbServiceServer.getLatestOtpVerification(normalizedEmail, 'password_reset');
+
+    if (!activeOtp) {
+      res.status(400).json({ error: 'No active password recovery request found. Please request a new recovery code.' });
+      return;
+    }
+
+    if (activeOtp.consumed_at) {
+      res.status(400).json({ error: 'This verification code has already been used. Please request a new recovery code.' });
+      return;
+    }
+
+    if (new Date() > new Date(activeOtp.expires_at)) {
+      res.status(400).json({ error: 'This verification code has expired. Please request a new recovery code.' });
+      return;
+    }
+
+    if (activeOtp.attempt_count >= activeOtp.max_attempts) {
+      res.status(400).json({ error: 'Maximum verification attempts reached. This code has been locked. Please request a new code.' });
+      return;
+    }
+
+    const inputHash = hashOTP(trimmedCode);
+    const isCodeValid = timingSafeCompare(inputHash, activeOtp.code_hash);
+
+    if (!isCodeValid) {
+      await dbServiceServer.incrementOtpAttempts(activeOtp.id);
+      const remainingAttempts = activeOtp.max_attempts - (activeOtp.attempt_count + 1);
+      if (remainingAttempts <= 0) {
+        res.status(400).json({ error: 'Incorrect code. Maximum attempts reached. This code has been locked. Please request a new code.' });
+      } else {
+        res.status(400).json({ error: `Incorrect code. Please try again. Attempts remaining: ${remainingAttempts}` });
+      }
+      return;
+    }
+
+    // Mark OTP as consumed
+    await dbServiceServer.consumeOtpVerification(activeOtp.id);
+
+    // Generate 64-char single-use password reset token
+    const rawResetToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(rawResetToken).digest('hex');
+    const tokenExpiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString(); // 15 mins
+
+    // Invalidate old tokens for this user
+    await dbServiceServer.invalidateUserPasswordResetTokens(activeOtp.user_id);
+
+    await dbServiceServer.createPasswordResetToken({
+      user_id: activeOtp.user_id,
+      token_hash: tokenHash,
+      expires_at: tokenExpiresAt,
+      request_ip: (req.headers['x-forwarded-for'] as string) || req.ip || '127.0.0.1',
+    });
+
+    res.status(200).json({
+      message: 'Verification successful.',
+      reset_token: rawResetToken,
+    });
+  } catch (err: any) {
+    console.error('[Backend Auth] Password reset verification error:', err);
+    res.status(500).json({ error: 'Verification failed. Please try again.' });
+  }
+});
+
+/**
+ * POST /api/auth/password-reset/complete
+ * Complete password reset using single-use reset token
+ */
+authRouter.post('/password-reset/complete', async (req: Request, res: Response): Promise<void> => {
+  const { reset_token, new_password, confirm_password } = req.body;
+
+  if (!reset_token || typeof reset_token !== 'string') {
+    res.status(400).json({ error: 'Valid password reset token is required.' });
+    return;
+  }
+
+  if (!new_password || typeof new_password !== 'string' || new_password.length < 8) {
+    res.status(400).json({ error: 'Password must be at least 8 characters long.' });
+    return;
+  }
+
+  if (new_password !== confirm_password) {
+    res.status(400).json({ error: 'New password and confirmation password do not match.' });
+    return;
+  }
+
+  if (COMMON_WEAK_PASSWORDS.includes(new_password.toLowerCase())) {
+    res.status(400).json({ error: 'This password is too common or easily guessed. Please choose a stronger password.' });
+    return;
+  }
+
+  try {
+    const tokenHash = crypto.createHash('sha256').update(reset_token.trim()).digest('hex');
+    const validTokenRecord = await dbServiceServer.getValidPasswordResetToken(tokenHash);
+
+    if (!validTokenRecord) {
+      res.status(400).json({ error: 'Invalid or expired password reset token. Please request a new recovery link.' });
+      return;
+    }
+
+    // 1. Consume reset token immediately to prevent reuse
+    await dbServiceServer.consumePasswordResetToken(validTokenRecord.id);
+
+    // 2. Invalidate remaining unconsumed tokens and recovery OTPs for this user
+    await dbServiceServer.invalidateUserPasswordResetTokens(validTokenRecord.user_id);
+
+    // 3. Update Supabase Auth user password
+    await dbServiceServer.updateUserPassword(validTokenRecord.user_id, new_password);
+
+    // 4. Retrieve user profile to send confirmation email
+    const user = await dbServiceServer.getUserById(validTokenRecord.user_id);
+    if (user && user.email) {
+      await dbServiceServer.invalidateUserOtps(user.email, 'password_reset');
+      await sendPasswordChangedEmail(user.email);
+    }
+
+    // 5. Write audit log entry
+    await dbServiceServer.createAuditLog({
+      actor_id: validTokenRecord.user_id,
+      action: 'password_reset_completed',
+      target_type: 'user',
+      target_id: validTokenRecord.user_id,
+      ip_address: (req.headers['x-forwarded-for'] as string) || req.ip || '127.0.0.1',
+    });
+
+    console.log(`[Auth Audit] Password reset completed successfully for userId=${validTokenRecord.user_id}`);
+
+    res.status(200).json({
+      message: 'Your password has been changed successfully.',
+    });
+  } catch (err: any) {
+    console.error('[Backend Auth] Password reset completion error:', err);
+    res.status(500).json({ error: err.message || 'Failed to update password.' });
   }
 });

@@ -166,6 +166,51 @@ export async function sendOtpEmail(to: string, otpCode: string): Promise<boolean
   return result.success;
 }
 
+export async function sendPasswordResetOtpEmail(to: string, otpCode: string): Promise<boolean> {
+  const safeOtp = escapeHtml(otpCode);
+  const result = await sendEmail({
+    to,
+    subject: 'Your MyAngan Password Reset Code',
+    templateType: 'password_reset',
+    htmlContent: `
+      <div style="font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background: #ffffff;">
+        <h2 style="color: #ea580c; margin-top: 0;">MyAngan Password Recovery</h2>
+        <p style="color: #334155; font-size: 14px;">You requested a password reset for your MyAngan account. Your single-use recovery code is:</p>
+        <div style="background: #fff7ed; border: 1px solid #fed7aa; font-size: 32px; font-weight: bold; letter-spacing: 6px; color: #c2410c; padding: 16px; text-align: center; border-radius: 8px; margin: 20px 0;">
+          ${safeOtp}
+        </div>
+        <p style="font-size: 13px; color: #64748b; margin-bottom: 4px;">This code is valid for <strong>10 minutes</strong>. Never share this code with anyone.</p>
+        <p style="font-size: 12px; color: #94a3b8; margin-top: 16px; border-top: 1px solid #f1f5f9; padding-top: 12px;">If you did not request this password reset, you can safely ignore this email. Your password will remain unchanged.</p>
+      </div>
+    `,
+    textContent: `Your MyAngan password reset code is: ${otpCode}. It expires in 10 minutes. If you did not request this, you can ignore this email.`,
+  });
+  return result.success;
+}
+
+export async function sendPasswordChangedEmail(to: string): Promise<boolean> {
+  const changeTime = new Date().toUTCString();
+  const result = await sendEmail({
+    to,
+    subject: 'Your MyAngan Password Has Been Changed',
+    templateType: 'password_changed',
+    htmlContent: `
+      <div style="font-family: sans-serif; max-width: 500px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background: #ffffff;">
+        <h2 style="color: #0f172a; margin-top: 0;">Password Changed Successfully</h2>
+        <p style="color: #334155; font-size: 14px;">The password for your MyAngan account was updated on <strong>${changeTime}</strong>.</p>
+        <div style="background: #f8fafc; border-left: 4px solid #3b82f6; padding: 14px; margin: 16px 0; border-radius: 4px; font-size: 13px; color: #475569;">
+          If you performed this action, no further steps are needed.
+        </div>
+        <p style="font-size: 12px; color: #dc2626; font-weight: 500; margin-top: 16px;">
+          Security Warning: If you did not authorize this change, please contact support immediately at support@myangan.in.
+        </p>
+      </div>
+    `,
+    textContent: `Your MyAngan password was changed on ${changeTime}. If you did not make this change, please contact support immediately at support@myangan.in.`,
+  });
+  return result.success;
+}
+
 export async function sendOwnerInquiryNotification(params: {
   ownerEmail: string;
   ownerName: string;

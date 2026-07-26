@@ -67,6 +67,8 @@ const memoryStore = {
   users: [] as any[],
   passwords: {} as Record<string, string>,
   otp_verifications: [] as any[],
+  password_reset_tokens: [] as any[],
+  audit_logs: [] as any[],
   notification_logs: [] as any[],
   properties: [] as any[],
 };
@@ -534,5 +536,173 @@ export const dbServiceServer = {
         memoryStore.users.push(owner);
       }
     }
+  },
+
+  async createPasswordResetToken(tokenData: {
+    user_id: string;
+    token_hash: string;
+    expires_at: string;
+    request_ip?: string;
+  }) {
+    const supabase = getSupabaseClient();
+    const cleanRecord = {
+      ...tokenData,
+      created_at: new Date().toISOString(),
+    };
+
+    if (supabase) {
+      const { data, error } = await supabase
+        .from('password_reset_tokens')
+        .insert([cleanRecord])
+        .select()
+        .single();
+      if (!error && data) {
+        return data;
+      }
+      console.warn(`[Supabase Notice] createPasswordResetToken write error: ${error?.message}`);
+      if (!isServerMockActive && !isTableMissingError(error)) {
+        throw new Error(`Failed to save password reset token: ${error?.message}`);
+      }
+    }
+
+    const mockRecord = {
+      id: 'prt-' + Math.random().toString(36).substr(2, 9),
+      ...cleanRecord,
+    };
+    memoryStore.password_reset_tokens.push(mockRecord);
+    return mockRecord;
+  },
+
+  async getValidPasswordResetToken(tokenHash: string) {
+    const supabase = getSupabaseClient();
+    const now = new Date().toISOString();
+
+    if (supabase) {
+      const { data, error } = await supabase
+        .from('password_reset_tokens')
+        .select('*')
+        .eq('token_hash', tokenHash)
+        .is('consumed_at', null)
+        .gt('expires_at', now)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!error && data) return data;
+      if (error) console.warn(`[Supabase Notice] getValidPasswordResetToken error: ${error.message}`);
+      if (!isServerMockActive && error && !isTableMissingError(error)) throw error;
+    }
+
+    const validToken = memoryStore.password_reset_tokens.find(
+      t => t.token_hash === tokenHash && !t.consumed_at && new Date(t.expires_at) > new Date()
+    );
+    return validToken || null;
+  },
+
+  async consumePasswordResetToken(tokenId: string) {
+    const supabase = getSupabaseClient();
+    const now = new Date().toISOString();
+
+    if (supabase) {
+      await supabase
+        .from('password_reset_tokens')
+        .update({ consumed_at: now })
+        .eq('id', tokenId);
+    }
+
+    const record = memoryStore.password_reset_tokens.find(t => t.id === tokenId);
+    if (record) {
+      record.consumed_at = now;
+    }
+  },
+
+  async invalidateUserPasswordResetTokens(userId: string) {
+    const supabase = getSupabaseClient();
+    const now = new Date().toISOString();
+
+    if (supabase) {
+      await supabase
+        .from('password_reset_tokens')
+        .update({ consumed_at: now })
+        .eq('user_id', userId)
+        .is('consumed_at', null);
+    }
+
+    memoryStore.password_reset_tokens.forEach(t => {
+      if (t.user_id === userId && !t.consumed_at) {
+        t.consumed_at = now;
+      }
+    });
+  },
+
+  async invalidateUserOtps(email: string, purpose: string) {
+    const supabase = getSupabaseClient();
+    const now = new Date().toISOString();
+
+    if (supabase) {
+      await supabase
+        .from('otp_verifications')
+        .update({ consumed_at: now })
+        .eq('email', email.trim().toLowerCase())
+        .eq('purpose', purpose)
+        .is('consumed_at', null);
+    }
+
+    memoryStore.otp_verifications.forEach(o => {
+      if (o.email.toLowerCase() === email.trim().toLowerCase() && o.purpose === purpose && !o.consumed_at) {
+        o.consumed_at = now;
+      }
+    });
+  },
+
+  async updateUserPassword(userId: string, newPassword: string) {
+    const supabase = getSupabaseClient();
+    if (supabase && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      const { data, error } = await supabase.auth.admin.updateUserById(userId, {
+        password: newPassword,
+      });
+      if (!error && data) {
+        return true;
+      }
+      console.warn(`[Supabase Notice] updateUserPassword error: ${error?.message}`);
+      if (!isServerMockActive && !isTableMissingError(error)) {
+        throw error;
+      }
+    }
+
+    const user = memoryStore.users.find(u => u.id === userId);
+    if (user && user.email) {
+      memoryStore.passwords[user.email.toLowerCase()] = newPassword;
+    }
+    return true;
+  },
+
+  async createAuditLog(log: {
+    actor_id?: string;
+    action: string;
+    target_type?: string;
+    target_id?: string;
+    details?: any;
+    ip_address?: string;
+  }) {
+    const supabase = getSupabaseClient();
+    const record = {
+      actor_id: log.actor_id || null,
+      action: log.action,
+      target_type: log.target_type || null,
+      target_id: log.target_id || null,
+      details: log.details || null,
+      ip_address: log.ip_address || null,
+      created_at: new Date().toISOString(),
+    };
+
+    if (supabase) {
+      try {
+        await supabase.from('audit_logs').insert([record]);
+      } catch {
+        // Fallback
+      }
+    }
+    memoryStore.audit_logs.push(record);
   },
 };
