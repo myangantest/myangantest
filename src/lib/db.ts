@@ -1336,8 +1336,18 @@ export const dbService = {
         created_at: new Date().toISOString()
       };
       
-      // Let's upsert the profile in public.users to ensure it's there
-      await supabase.from('users').upsert(profile);
+      // Upsert profile in public.profiles and public.user_roles
+      await supabase.from('profiles').upsert({
+        id: data.user.id,
+        email,
+        full_name: name,
+        phone,
+        updated_at: new Date().toISOString()
+      });
+      await supabase.from('user_roles').upsert({
+        user_id: data.user.id,
+        role: (role || 'renter') as any
+      }, { onConflict: 'user_id,role' });
       return profile;
     } else if (isMockModeActive) {
       // Local Storage Mode for Development Mock Only

@@ -139,21 +139,31 @@ export const dbServiceServer = {
     const supabase = getSupabaseClient();
     if (supabase) {
       const { data, error } = await supabase
-        .from('users')
+        .from('profiles')
         .upsert({
-          ...profile,
+          id: profile.id,
           email: profile.email.trim().toLowerCase(),
+          full_name: profile.name,
+          phone: profile.phone,
           is_verified: profile.is_verified ?? false,
-          created_at: new Date().toISOString(),
+          is_subscribed: profile.is_subscribed ?? false,
+          updated_at: new Date().toISOString(),
         })
         .select()
         .single();
       if (!error && data) {
-        return data;
+        await supabase
+          .from('user_roles')
+          .upsert({
+            user_id: profile.id,
+            role: (profile.role || 'renter') as any
+          }, { onConflict: 'user_id,role' });
+
+        return { ...data, name: data.full_name, role: profile.role || 'renter' };
       }
       console.warn(`[Supabase Notice] createUserProfile write error: ${error?.message}`);
       if (!isServerMockActive && !isTableMissingError(error)) {
-        throw new Error(`Failed to write user profile to public.users table: ${error?.message}`);
+        throw new Error(`Failed to write user profile to public.profiles table: ${error?.message}`);
       }
     }
 
@@ -175,14 +185,27 @@ export const dbServiceServer = {
   async updateUserProfile(userId: string, updates: any) {
     const supabase = getSupabaseClient();
     if (supabase) {
+      const profileUpdates: any = { ...updates };
+      if (profileUpdates.name) {
+        profileUpdates.full_name = profileUpdates.name;
+        delete profileUpdates.name;
+      }
+      delete profileUpdates.role;
+      profileUpdates.updated_at = new Date().toISOString();
+
       const { data, error } = await supabase
-        .from('users')
-        .update(updates)
+        .from('profiles')
+        .update(profileUpdates)
         .eq('id', userId)
         .select()
         .single();
       if (!error && data) {
-        return data;
+        if (updates.role) {
+          await supabase
+            .from('user_roles')
+            .upsert({ user_id: userId, role: updates.role }, { onConflict: 'user_id,role' });
+        }
+        return { ...data, name: data.full_name };
       }
       console.warn(`[Supabase Notice] updateUserProfile write error: ${error?.message}`);
       if (!isServerMockActive && !isTableMissingError(error)) {
