@@ -36,13 +36,14 @@ async function bootstrapAdmin() {
 
   const isRealSupabase = !!supabaseUrl && !!serviceKey && !supabaseUrl.includes('placeholder');
 
+  let userId = '';
+
   if (isRealSupabase) {
     const supabase = createClient(supabaseUrl, serviceKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
 
     try {
-      let userId = '';
 
       // 1. Check if Auth user exists
       const { data: usersData, error: listErr } = await supabase.auth.admin.listUsers();
@@ -112,15 +113,19 @@ async function bootstrapAdmin() {
     }
   }
 
-  // Fallback to local memoryStore for dev/test execution
-  const mockUserId = 'admin-service-id';
-  await dbServiceServer.createUserProfile({
-    id: mockUserId,
-    email: email,
-    name: 'MyAngan Administrator',
-    phone: '+919999900000',
-    role: 'admin',
-  });
+  // Fallback / sync to memoryStore for dev/test execution
+  const mockUserId = userId || '00000000-0000-4000-a000-000000000001';
+  try {
+    await dbServiceServer.createUserProfile({
+      id: mockUserId,
+      email: email,
+      name: 'MyAngan Administrator',
+      phone: '+919999900000',
+      role: 'admin',
+    });
+  } catch (e) {
+    // Already populated in Supabase profiles
+  }
   await dbServiceServer.savePasswordForMock(email, password);
 
   console.log('✓ Mock / Local admin user profile initialized');
