@@ -28,6 +28,7 @@ app.use(express.json({
 
 // API Router Mounts
 app.use("/api/auth", authRouter);
+app.use("/api", authRouter);
 app.use("/api/admin", migrationRouter);
 app.use("/api/payments", paymentRouter);
 app.use("/api/operations", operationsRouter);

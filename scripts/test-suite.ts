@@ -1,4 +1,5 @@
 import { dbService, safeJsonParse } from '../src/lib/db';
+import { dbServiceServer } from '../server/db';
 import { seoPageService, DEFAULT_SEO_PAGES } from '../src/lib/seoData';
 import fs from 'fs';
 import path from 'path';
@@ -75,6 +76,7 @@ async function runTestSuite() {
   let testServer: any = null;
   try {
     const express = (await import('express')).default;
+    const { dbServiceServer } = await import('../server/db');
     const { authRouter } = await import('../server/auth');
     const { migrationRouter } = await import('../server/migration');
     const { paymentRouter } = await import('../server/payments');
@@ -174,6 +176,15 @@ async function runTestSuite() {
     assert(weakPasswordCompleteRes.status === 400, 'POST /api/auth/password-reset/complete rejects weak passwords with HTTP 400');
 
     // Admin API Protection & Authentication Tests
+    await dbServiceServer.createUserProfile({
+      id: 'usr_renter_test',
+      email: 'renter@example.com',
+      name: 'Renter Test User',
+      phone: '9998887771',
+      role: 'renter',
+    });
+    await dbServiceServer.savePasswordForMock('renter@example.com', 'password123');
+
     const nonAdminLoginRes = await fetch(`${baseUrl}/api/admin/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

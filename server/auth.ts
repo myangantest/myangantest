@@ -976,63 +976,125 @@ async function requireAdminAuth(req: any, res: any, next: any) {
   }
 }
 
-authRouter.post('/admin/login', async (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) {
+authRouter.post('/admin/login', async (req: Request, res: Response): Promise<void> => {
+  const { email, password } = req.body || {};
+  if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
     res.status(400).json({ error: 'Email and password are required.' });
     return;
   }
 
   const cleanEmail = email.trim().toLowerCase();
+  const supabase = getSupabaseClient();
 
   try {
-    const user = await dbServiceServer.getUserByEmail(cleanEmail);
+    let userId: string | null = null;
+    let sessionData: any = null;
 
-    if (!user || (user.role !== 'admin' && user.account_category !== 'admin')) {
-      await dbServiceServer.createAuditLog({
-        action: 'admin_login_failure',
-        target_type: 'user',
-        details: { email: cleanEmail, reason: 'Non-admin user or user not found' },
-        ip_address: (req.headers['x-forwarded-for'] as string) || req.ip || '127.0.0.1',
+    if (supabase) {
+      // 1. Authenticate through Supabase Auth
+      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password: password,
       });
-      res.status(403).json({ error: 'Invalid credentials or insufficient access.' });
-      return;
+
+      if (authError || !authData.user) {
+        console.warn(`[Admin Login Security] Auth failure for email ${cleanEmail}: ${authError?.message}`);
+        await dbServiceServer.createAuditLog({
+          action: 'admin_login_failure',
+          target_type: 'user',
+          details: { email: cleanEmail, reason: authError?.message || 'Invalid credentials' },
+          ip_address: (req.headers['x-forwarded-for'] as string) || req.ip || '127.0.0.1',
+        });
+        res.status(401).json({ error: 'Invalid email or password.' });
+        return;
+      }
+
+      userId = authData.user.id;
+      sessionData = authData.session;
+
+      // 2. Query public.user_roles by authenticated user UUID
+      const { data: roleData, error: roleError } = await supabase
+        .from('user_roles')
+        .select('role')
+        .eq('user_id', userId)
+        .eq('role', 'admin')
+        .maybeSingle();
+
+      if (roleError || !roleData) {
+        console.warn(`[Admin Login Security] Non-admin access attempt for user UUID ${userId} (${cleanEmail})`);
+        await dbServiceServer.createAuditLog({
+          actor_id: userId,
+          action: 'admin_login_forbidden',
+          target_type: 'user',
+          target_id: userId,
+          details: { email: cleanEmail, reason: 'Authenticated user lacks admin operational role in public.user_roles' },
+          ip_address: (req.headers['x-forwarded-for'] as string) || req.ip || '127.0.0.1',
+        });
+        res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
+        return;
+      }
+    } else {
+      // Development Mock Fallback
+      const user = await dbServiceServer.getUserByEmail(cleanEmail);
+      if (!user) {
+        res.status(401).json({ error: 'Invalid email or password.' });
+        return;
+      }
+
+      const isValidPass = await dbServiceServer.verifyPasswordForMock(cleanEmail, password);
+      if (!isValidPass) {
+        await dbServiceServer.createAuditLog({
+          actor_id: user.id,
+          action: 'admin_login_failure',
+          target_type: 'user',
+          target_id: user.id,
+          details: { email: cleanEmail, reason: 'Invalid password' },
+          ip_address: (req.headers['x-forwarded-for'] as string) || req.ip || '127.0.0.1',
+        });
+        res.status(401).json({ error: 'Invalid email or password.' });
+        return;
+      }
+
+      if (user.role !== 'admin' && user.account_category !== 'admin') {
+        await dbServiceServer.createAuditLog({
+          actor_id: user.id,
+          action: 'admin_login_forbidden',
+          target_type: 'user',
+          target_id: user.id,
+          details: { email: cleanEmail, reason: 'Non-admin user attempt' },
+          ip_address: (req.headers['x-forwarded-for'] as string) || req.ip || '127.0.0.1',
+        });
+        res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
+        return;
+      }
+
+      userId = user.id;
     }
 
-    const isValidPass = await dbServiceServer.verifyPasswordForMock(cleanEmail, password);
-    if (!isValidPass) {
-      await dbServiceServer.createAuditLog({
-        actor_id: user.id,
-        action: 'admin_login_failure',
-        target_type: 'user',
-        target_id: user.id,
-        details: { email: cleanEmail, reason: 'Invalid password' },
-        ip_address: (req.headers['x-forwarded-for'] as string) || req.ip || '127.0.0.1',
-      });
-      res.status(403).json({ error: 'Invalid credentials or insufficient access.' });
-      return;
-    }
+    const adminUser = await dbServiceServer.getUserById(userId!);
 
     await dbServiceServer.createAuditLog({
-      actor_id: user.id,
+      actor_id: userId!,
       action: 'admin_login_success',
       target_type: 'user',
-      target_id: user.id,
+      target_id: userId!,
       ip_address: (req.headers['x-forwarded-for'] as string) || req.ip || '127.0.0.1',
     });
 
     res.status(200).json({
       message: 'Admin login successful.',
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name || user.full_name || 'Admin',
+      user: adminUser || {
+        id: userId,
+        email: cleanEmail,
+        name: 'Administrator',
         role: 'admin',
         account_category: 'admin',
       },
-      token: `${cleanEmail}:admin`,
+      session: sessionData,
+      token: sessionData?.access_token || `${cleanEmail}:admin`,
     });
   } catch (err: any) {
+    console.error(`[Admin Login Exception] Error during admin authentication:`, err);
     res.status(500).json({ error: 'Internal server error during admin login.' });
   }
 });
