@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { Request, Response, Router } from 'express';
-import { dbServiceServer, getSupabaseClient, isServerMockActive } from './db.js';
+import { dbServiceServer, getSupabaseClient, getSupabaseAdminClient, getSupabaseAuthClient, isServerMockActive } from './db.js';
 import { sendEmail, sendPasswordResetOtpEmail, sendPasswordChangedEmail } from './email.js';
 
 export const authRouter = Router();
@@ -932,112 +932,140 @@ authRouter.post('/password-reset/complete', async (req: Request, res: Response):
 async function requireAdminAuth(req: any, res: any, next: any) {
   try {
     const authHeader = req.headers['authorization'];
-    const userIdHeader = req.headers['x-user-id'];
-    let email = req.headers['x-user-email'];
-
-    let userId = userIdHeader;
-
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.split(' ')[1];
-      if (token.includes(':')) {
-        const [tokEmail, tokRole] = token.split(':');
-        if (tokRole === 'admin') {
-          email = tokEmail;
-        }
-      }
-    }
-
-    if (!userId && !email) {
-      res.status(401).json({ error: 'Authentication required for admin access.' });
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      res.status(401).json({ code: 'ADMIN_AUTH_SESSION_MISSING', error: 'Authentication required. Bearer token missing.' });
       return;
     }
 
-    let user = null;
-    if (userId) {
-      user = await dbServiceServer.getUserById(userId);
-    } else if (email) {
-      user = await dbServiceServer.getUserByEmail(email);
-    }
-
-    if (!user) {
-      res.status(401).json({ error: 'Authentication required for admin access.' });
+    const token = authHeader.split(' ')[1];
+    if (!token || token.includes(':')) {
+      // Rejects spoofed email:admin fake tokens
+      res.status(401).json({ code: 'ADMIN_TOKEN_INVALID', error: 'Invalid authentication token.' });
       return;
     }
 
-    if (user.role !== 'admin' && user.account_category !== 'admin') {
-      res.status(403).json({ error: 'Forbidden: Invalid credentials or insufficient access.' });
-      return;
-    }
+    const supabaseAuth = getSupabaseAuthClient();
+    const supabaseAdmin = getSupabaseAdminClient();
 
-    req.adminUser = user;
-    next();
-  } catch (err) {
-    res.status(401).json({ error: 'Authentication failed.' });
-  }
-}
-
-authRouter.post('/admin/login', async (req: Request, res: Response): Promise<void> => {
-  const { email, password } = req.body || {};
-  if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
-    res.status(400).json({ error: 'Email and password are required.' });
-    return;
-  }
-
-  const cleanEmail = email.trim().toLowerCase();
-  const supabase = getSupabaseClient();
-
-  try {
     let userId: string | null = null;
-    let sessionData: any = null;
 
-    if (supabase) {
-      // 1. Authenticate through Supabase Auth
-      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-        email: cleanEmail,
-        password: password,
-      });
-
-      if (authError || !authData.user) {
-        console.warn(`[Admin Login Security] Auth failure for email ${cleanEmail}: ${authError?.message}`);
-        await dbServiceServer.createAuditLog({
-          action: 'admin_login_failure',
-          target_type: 'user',
-          details: { email: cleanEmail, reason: authError?.message || 'Invalid credentials' },
-          ip_address: (req.headers['x-forwarded-for'] as string) || req.ip || '127.0.0.1',
-        });
-        res.status(401).json({ error: 'Invalid email or password.' });
+    if (supabaseAuth && supabaseAdmin) {
+      // 1. Validate Bearer token with Supabase Auth
+      const { data: userData, error: userError } = await supabaseAuth.auth.getUser(token);
+      if (userError || !userData?.user) {
+        console.warn(`[Admin Auth Security] Bearer token validation failed: ${userError?.message}`);
+        res.status(401).json({ code: 'ADMIN_TOKEN_INVALID', error: 'Invalid or expired session token.' });
         return;
       }
+      userId = userData.user.id;
 
-      userId = authData.user.id;
-      sessionData = authData.session;
-
-      // 2. Query public.user_roles by authenticated user UUID
-      const { data: roleData, error: roleError } = await supabase
+      // 2. Query public.user_roles using clean Server Admin Client
+      const { data: roleData, error: roleError } = await supabaseAdmin
         .from('user_roles')
         .select('role')
         .eq('user_id', userId)
         .eq('role', 'admin')
         .maybeSingle();
 
-      if (roleError || !roleData) {
-        console.warn(`[Admin Login Security] Non-admin access attempt for user UUID ${userId} (${cleanEmail})`);
+      if (roleError) {
+        console.error(`[Admin Auth Error] Role query failed for user UUID ${userId}: ${roleError.message}`);
+        res.status(500).json({ code: 'ADMIN_ROLE_QUERY_FAILED', error: 'Internal database error during authorization.' });
+        return;
+      }
+
+      if (!roleData || roleData.role !== 'admin') {
+        console.warn(`[Admin Auth Security] Access forbidden for non-admin user UUID ${userId}`);
+        res.status(403).json({ code: 'ADMIN_ACCESS_FORBIDDEN', error: 'Access denied. Administrator privileges required.' });
+        return;
+      }
+    } else {
+      // Development / Test Mock Mode
+      if (token === 'mock-admin-token') {
+        userId = 'usr_admin_mock';
+      } else {
+        res.status(401).json({ code: 'ADMIN_TOKEN_INVALID', error: 'Invalid or expired session token.' });
+        return;
+      }
+    }
+
+    const adminUser = await dbServiceServer.getUserById(userId!);
+    req.adminUser = adminUser || { id: userId, role: 'admin' };
+    next();
+  } catch (err: any) {
+    console.error(`[Admin Auth Exception] requireAdminAuth failure:`, err);
+    res.status(500).json({ code: 'ADMIN_ROLE_QUERY_FAILED', error: 'Internal server error during authorization.' });
+  }
+}
+
+authRouter.post('/admin/login', async (req: Request, res: Response): Promise<void> => {
+  const { email, password } = req.body || {};
+  if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
+    res.status(400).json({ code: 'ADMIN_AUTH_INVALID_CREDENTIALS', error: 'Email and password are required.' });
+    return;
+  }
+
+  const cleanEmail = email.trim().toLowerCase();
+  const supabaseAuth = getSupabaseAuthClient();
+  const supabaseAdmin = getSupabaseAdminClient();
+
+  try {
+    let userId: string | null = null;
+    let sessionData: any = null;
+
+    if (supabaseAuth && supabaseAdmin) {
+      // 1. Authenticate using the separate Authentication Client (signInWithPassword)
+      const { data: authData, error: authError } = await supabaseAuth.auth.signInWithPassword({
+        email: cleanEmail,
+        password: password,
+      });
+
+      if (authError || !authData.user) {
+        console.warn(`[Admin Login] Auth failure for email ${cleanEmail}: ${authError?.message}`);
+        await dbServiceServer.createAuditLog({
+          action: 'admin_login_failure',
+          target_type: 'user',
+          details: { email: cleanEmail, code: 'ADMIN_AUTH_INVALID_CREDENTIALS', reason: authError?.message || 'Invalid credentials' },
+          ip_address: (req.headers['x-forwarded-for'] as string) || req.ip || '127.0.0.1',
+        });
+        res.status(401).json({ code: 'ADMIN_AUTH_INVALID_CREDENTIALS', error: 'Invalid email or password.' });
+        return;
+      }
+
+      userId = authData.user.id;
+      sessionData = authData.session;
+
+      // 2. Query public.user_roles using clean Server Admin Client (Service Role Key)
+      const { data: roleData, error: roleError } = await supabaseAdmin
+        .from('user_roles')
+        .select('role')
+        .eq('user_id', userId)
+        .eq('role', 'admin')
+        .maybeSingle();
+
+      if (roleError) {
+        console.error(`[Admin Login Error] Role DB query failed for user UUID ${userId}: ${roleError.message}`);
+        res.status(500).json({ code: 'ADMIN_ROLE_QUERY_FAILED', error: 'Internal database error during admin verification.' });
+        return;
+      }
+
+      if (!roleData || roleData.role !== 'admin') {
+        console.warn(`[Admin Login Security] Non-admin login attempt for authenticated user UUID ${userId} (${cleanEmail})`);
         await dbServiceServer.createAuditLog({
           actor_id: userId,
           action: 'admin_login_forbidden',
           target_type: 'user',
           target_id: userId,
-          details: { email: cleanEmail, reason: 'Authenticated user lacks admin operational role in public.user_roles' },
+          details: { email: cleanEmail, code: 'ADMIN_ACCESS_FORBIDDEN', reason: 'Authenticated user lacks admin role in user_roles' },
           ip_address: (req.headers['x-forwarded-for'] as string) || req.ip || '127.0.0.1',
         });
-        res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
+        res.status(403).json({ code: 'ADMIN_ACCESS_FORBIDDEN', error: 'Access denied. Administrator privileges required.' });
         return;
       }
     } else {
       // Development Mock Fallback
       const user = await dbServiceServer.getUserByEmail(cleanEmail);
       if (!user) {
-        res.status(401).json({ error: 'Invalid email or password.' });
+        res.status(401).json({ code: 'ADMIN_AUTH_INVALID_CREDENTIALS', error: 'Invalid email or password.' });
         return;
       }
 
@@ -1048,10 +1076,10 @@ authRouter.post('/admin/login', async (req: Request, res: Response): Promise<voi
           action: 'admin_login_failure',
           target_type: 'user',
           target_id: user.id,
-          details: { email: cleanEmail, reason: 'Invalid password' },
+          details: { email: cleanEmail, code: 'ADMIN_AUTH_INVALID_CREDENTIALS', reason: 'Invalid password' },
           ip_address: (req.headers['x-forwarded-for'] as string) || req.ip || '127.0.0.1',
         });
-        res.status(401).json({ error: 'Invalid email or password.' });
+        res.status(401).json({ code: 'ADMIN_AUTH_INVALID_CREDENTIALS', error: 'Invalid email or password.' });
         return;
       }
 
@@ -1061,14 +1089,20 @@ authRouter.post('/admin/login', async (req: Request, res: Response): Promise<voi
           action: 'admin_login_forbidden',
           target_type: 'user',
           target_id: user.id,
-          details: { email: cleanEmail, reason: 'Non-admin user attempt' },
+          details: { email: cleanEmail, code: 'ADMIN_ACCESS_FORBIDDEN', reason: 'Non-admin user attempt' },
           ip_address: (req.headers['x-forwarded-for'] as string) || req.ip || '127.0.0.1',
         });
-        res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
+        res.status(403).json({ code: 'ADMIN_ACCESS_FORBIDDEN', error: 'Access denied. Administrator privileges required.' });
         return;
       }
 
       userId = user.id;
+      sessionData = {
+        access_token: `mock-admin-token`,
+        refresh_token: `mock-refresh-token`,
+        expires_in: 3600,
+        token_type: 'bearer',
+      };
     }
 
     const adminUser = await dbServiceServer.getUserById(userId!);
@@ -1078,6 +1112,7 @@ authRouter.post('/admin/login', async (req: Request, res: Response): Promise<voi
       action: 'admin_login_success',
       target_type: 'user',
       target_id: userId!,
+      details: { code: 'ADMIN_LOGIN_SUCCESS' },
       ip_address: (req.headers['x-forwarded-for'] as string) || req.ip || '127.0.0.1',
     });
 
@@ -1091,11 +1126,11 @@ authRouter.post('/admin/login', async (req: Request, res: Response): Promise<voi
         account_category: 'admin',
       },
       session: sessionData,
-      token: sessionData?.access_token || `${cleanEmail}:admin`,
+      token: sessionData?.access_token || `mock-admin-token`,
     });
   } catch (err: any) {
     console.error(`[Admin Login Exception] Error during admin authentication:`, err);
-    res.status(500).json({ error: 'Internal server error during admin login.' });
+    res.status(500).json({ code: 'ADMIN_ROLE_QUERY_FAILED', error: 'Internal server error during admin login.' });
   }
 });
 

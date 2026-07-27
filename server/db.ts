@@ -2,27 +2,33 @@ import { createClient } from '@supabase/supabase-js';
 
 // Environment variable detection for server side
 const serverUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
-const serverServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const anonKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || serviceRoleKey;
 
 const isServerUrlDetected = !!serverUrl && 
   !serverUrl.includes('placeholder') && 
   !serverUrl.includes('MY_SUPABASE') && 
   !serverUrl.includes('your-supabase');
 
-const isServerKeyDetected = !!serverServiceKey && 
-  !serverServiceKey.includes('placeholder') && 
-  !serverServiceKey.includes('MY_SUPABASE') && 
-  !serverServiceKey.includes('your-supabase');
+const isServiceKeyDetected = !!serviceRoleKey && 
+  !serviceRoleKey.includes('placeholder') && 
+  !serviceRoleKey.includes('MY_SUPABASE') && 
+  !serviceRoleKey.includes('your-supabase');
+
+const isAnonKeyDetected = !!anonKey && 
+  !anonKey.includes('placeholder') && 
+  !anonKey.includes('MY_SUPABASE') && 
+  !anonKey.includes('your-supabase');
 
 // Startup logs matching exact requirements
 if (isServerUrlDetected) {
   console.log('✓ Supabase URL detected');
 }
-if (isServerKeyDetected) {
-  console.log('✓ Supabase Anon Key detected');
+if (isAnonKeyDetected || isServiceKeyDetected) {
+  console.log('✓ Supabase Key detected');
 }
 
-if (isServerUrlDetected && isServerKeyDetected) {
+if (isServerUrlDetected && (isServiceKeyDetected || isAnonKeyDetected)) {
   console.log('✓ Connected to Supabase');
 } else {
   console.log('✗ Missing Supabase configuration');
@@ -33,29 +39,67 @@ const isDevEnv = process.env.NODE_ENV === 'development';
 const isMockAllowed = process.env.ALLOW_MOCK_STORAGE === 'true' || process.env.VITE_ALLOW_MOCK_STORAGE === 'true';
 export const isServerMockActive = isDevEnv && isMockAllowed;
 
-// Lazy-loaded Supabase client
-let supabaseClientInstance: any = null;
+// Lazy-loaded Supabase client instances for separate trust levels
+let supabaseAdminClientInstance: any = null;
 
-export function getSupabaseClient() {
-  if (supabaseClientInstance !== null) return supabaseClientInstance;
+/**
+ * Clean Server Admin Client for Service-Role Database Operations.
+ * Uses ONLY SUPABASE_SERVICE_ROLE_KEY.
+ * Never calls signInWithPassword and never attaches user session.
+ */
+export function getSupabaseAdminClient() {
+  if (supabaseAdminClientInstance !== null) return supabaseAdminClientInstance;
 
-  if (!isServerUrlDetected || !isServerKeyDetected) {
-    supabaseClientInstance = null;
+  if (!isServerUrlDetected || !isServiceKeyDetected) {
+    supabaseAdminClientInstance = null;
     return null;
   }
 
   try {
-    supabaseClientInstance = createClient(serverUrl, serverServiceKey, {
+    supabaseAdminClientInstance = createClient(serverUrl, serviceRoleKey, {
       auth: {
         persistSession: false,
         autoRefreshToken: false,
+        detectSessionInUrl: false,
       },
     });
-    return supabaseClientInstance;
+    return supabaseAdminClientInstance;
   } catch {
-    supabaseClientInstance = null;
+    supabaseAdminClientInstance = null;
     return null;
   }
+}
+
+/**
+ * Authentication Client for Credential Validation & Session Token Check.
+ * Uses Anon Key / User-facing auth.
+ * Calls signInWithPassword or auth.getUser(token).
+ * NEVER reused for service-role DB queries.
+ */
+export function getSupabaseAuthClient() {
+  if (!isServerUrlDetected || !isAnonKeyDetected) {
+    return null;
+  }
+
+  try {
+    return createClient(serverUrl, anonKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false,
+      },
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Backwards compatible DB client getter.
+ * Prioritizes the clean admin service-role client for DB queries.
+ */
+export function getSupabaseClient() {
+  return getSupabaseAdminClient() || getSupabaseAuthClient();
 }
 
 export function isSupabaseConnected() {

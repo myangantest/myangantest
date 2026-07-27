@@ -2249,6 +2249,23 @@ export const dbService = {
     }
   },
 
+  async getAdminAuthHeaders(emailOrToken?: string): Promise<Record<string, string>> {
+    let token = emailOrToken && !emailOrToken.includes('@') ? emailOrToken : undefined;
+    if (!token && isRealSupabaseConfigured && supabase) {
+      const sessionRes = await supabase.auth.getSession();
+      if (sessionRes?.data?.session?.access_token) {
+        token = sessionRes.data.session.access_token;
+      }
+    }
+    if (!token) {
+      const stored = localStorage.getItem('myangan_admin_access_token');
+      if (stored && !stored.includes(':')) {
+        token = stored;
+      }
+    }
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  },
+
   async adminLogin(email: string, pass: string): Promise<any> {
     const response = await fetch('/api/admin/login', {
       method: 'POST',
@@ -2260,24 +2277,38 @@ export const dbService = {
     if (!response.ok) {
       throw new Error(data.error || 'Invalid credentials or insufficient access.');
     }
+
+    if (data.session?.access_token) {
+      if (isRealSupabaseConfigured && supabase) {
+        await supabase.auth.setSession({
+          access_token: data.session.access_token,
+          refresh_token: data.session.refresh_token || '',
+        }).catch((err) => console.warn('[Admin Auth] Session sync notice:', err));
+      }
+      localStorage.setItem('myangan_admin_access_token', data.session.access_token);
+    } else if (data.token && !data.token.includes(':')) {
+      localStorage.setItem('myangan_admin_access_token', data.token);
+    }
     return data;
   },
 
-  async adminGetPendingProviders(adminEmail: string): Promise<any[]> {
+  async adminGetPendingProviders(adminEmailOrToken?: string): Promise<any[]> {
+    const authHeaders = await this.getAdminAuthHeaders(adminEmailOrToken);
     const response = await fetch('/api/admin/providers', {
-      headers: { 'x-user-email': adminEmail },
+      headers: { ...authHeaders },
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || 'Failed to fetch providers.');
     return data.providers || [];
   },
 
-  async adminReviewProvider(adminEmail: string, userId: string, status: string, notes?: string): Promise<any> {
+  async adminReviewProvider(adminEmailOrToken: string, userId: string, status: string, notes?: string): Promise<any> {
+    const authHeaders = await this.getAdminAuthHeaders(adminEmailOrToken);
     const response = await fetch(`/api/admin/providers/${userId}/review`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-user-email': adminEmail,
+        ...authHeaders,
       },
       body: JSON.stringify({ status, notes }),
     });
@@ -2286,22 +2317,24 @@ export const dbService = {
     return data;
   },
 
-  async adminGetProperties(adminEmail: string, statusFilter?: string): Promise<any[]> {
+  async adminGetProperties(adminEmailOrToken?: string, statusFilter?: string): Promise<any[]> {
+    const authHeaders = await this.getAdminAuthHeaders(adminEmailOrToken);
     const query = statusFilter ? `?status=${encodeURIComponent(statusFilter)}` : '';
     const response = await fetch(`/api/admin/properties${query}`, {
-      headers: { 'x-user-email': adminEmail },
+      headers: { ...authHeaders },
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || 'Failed to fetch properties.');
     return data.properties || [];
   },
 
-  async adminReviewProperty(adminEmail: string, propertyId: string, action: string, notes?: string): Promise<any> {
+  async adminReviewProperty(adminEmailOrToken: string, propertyId: string, action: string, notes?: string): Promise<any> {
+    const authHeaders = await this.getAdminAuthHeaders(adminEmailOrToken);
     const response = await fetch(`/api/admin/properties/${propertyId}/review`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-user-email': adminEmail,
+        ...authHeaders,
       },
       body: JSON.stringify({ action, notes }),
     });
@@ -2310,9 +2343,10 @@ export const dbService = {
     return data;
   },
 
-  async adminGetAuditLogs(adminEmail: string): Promise<any[]> {
+  async adminGetAuditLogs(adminEmailOrToken?: string): Promise<any[]> {
+    const authHeaders = await this.getAdminAuthHeaders(adminEmailOrToken);
     const response = await fetch('/api/admin/audit-logs', {
-      headers: { 'x-user-email': adminEmail },
+      headers: { ...authHeaders },
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || 'Failed to fetch audit logs.');

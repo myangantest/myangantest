@@ -4,7 +4,7 @@
  * 
  * Secure, Idempotent Admin Bootstrap Script
  * Usage:
- * INITIAL_ADMIN_EMAIL="service@myangan.com" INITIAL_ADMIN_PASSWORD="YourStrongPassword" npm run admin:create
+ * INITIAL_ADMIN_EMAIL="service@myangan.com" INITIAL_ADMIN_PASSWORD="YourStrongPassword" SUPABASE_SERVICE_ROLE_KEY="..." npm run admin:create
  */
 
 import dotenv from 'dotenv';
@@ -16,19 +16,24 @@ import { dbServiceServer } from '../server/db.js';
 
 async function bootstrapAdmin() {
   const email = (process.env.INITIAL_ADMIN_EMAIL || 'service@myangan.com').trim().toLowerCase();
-  const password = process.env.INITIAL_ADMIN_PASSWORD || 'SecretAdminPass123!';
-
+  const password = process.env.INITIAL_ADMIN_PASSWORD || '';
   const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
   if (!password) {
-    console.error('❌ Error: INITIAL_ADMIN_PASSWORD environment variable is required.');
-    console.error('Example: INITIAL_ADMIN_EMAIL="service@myangan.com" INITIAL_ADMIN_PASSWORD="YourStrongPassword" npm run admin:create');
+    console.error('❌ Error: INITIAL_ADMIN_PASSWORD environment variable is strictly required.');
+    console.error('Usage: INITIAL_ADMIN_EMAIL="service@myangan.com" INITIAL_ADMIN_PASSWORD="YourStrongPassword" SUPABASE_SERVICE_ROLE_KEY="..." npm run admin:create');
     process.exit(1);
   }
 
   if (password.length < 8) {
     console.error('❌ Error: INITIAL_ADMIN_PASSWORD must be at least 8 characters long.');
+    process.exit(1);
+  }
+
+  if (!serviceKey && (!process.env.NODE_ENV || process.env.NODE_ENV !== 'development')) {
+    console.error('❌ Error: SUPABASE_SERVICE_ROLE_KEY environment variable is strictly required for remote admin bootstrap.');
+    console.error('Do not use anon or VITE keys for service administration.');
     process.exit(1);
   }
 
@@ -40,11 +45,10 @@ async function bootstrapAdmin() {
 
   if (isRealSupabase) {
     const supabase = createClient(supabaseUrl, serviceKey, {
-      auth: { persistSession: false, autoRefreshToken: false },
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
     });
 
     try {
-
       // 1. Check if Auth user exists
       const { data: usersData, error: listErr } = await supabase.auth.admin.listUsers();
       if (!listErr && usersData?.users) {
@@ -93,7 +97,7 @@ async function bootstrapAdmin() {
           }, { onConflict: 'id' });
         console.log('✓ Profile row upserted in public.profiles');
 
-        // 3. Assign exactly ONE admin role in public.user_roles
+        // 3. Delete any conflicting non-admin role rows and assign exactly ONE admin role in public.user_roles
         await supabase.from('user_roles').delete().eq('user_id', userId);
         await supabase.from('user_roles').insert([{ user_id: userId, role: 'admin' }]);
         console.log('✓ Assigned exact role "admin" in public.user_roles');
@@ -124,7 +128,7 @@ async function bootstrapAdmin() {
       role: 'admin',
     });
   } catch (e) {
-    // Already populated in Supabase profiles
+    // Already populated
   }
   await dbServiceServer.savePasswordForMock(email, password);
 

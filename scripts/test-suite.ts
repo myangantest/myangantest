@@ -177,6 +177,15 @@ async function runTestSuite() {
 
     // Admin API Protection & Authentication Tests
     await dbServiceServer.createUserProfile({
+      id: 'usr_admin_test',
+      email: 'service@myangan.com',
+      name: 'Admin Test User',
+      phone: '9998887770',
+      role: 'admin',
+    });
+    await dbServiceServer.savePasswordForMock('service@myangan.com', 'SecretAdminPass123!');
+
+    await dbServiceServer.createUserProfile({
       id: 'usr_renter_test',
       email: 'renter@example.com',
       name: 'Renter Test User',
@@ -185,6 +194,25 @@ async function runTestSuite() {
     });
     await dbServiceServer.savePasswordForMock('renter@example.com', 'password123');
 
+    // 1. Valid Admin Login -> HTTP 200
+    const adminLoginRes = await fetch(`${baseUrl}/api/admin/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'service@myangan.com', password: 'SecretAdminPass123!' }),
+    });
+    assert(adminLoginRes.status === 200, 'POST /api/admin/login authenticates valid admin credentials with HTTP 200');
+    const adminLoginData = await adminLoginRes.json().catch(() => ({}));
+    const adminToken = adminLoginData.token || 'mock-admin-token';
+
+    // 2. Invalid Admin Password -> HTTP 401
+    const invalidAdminPassRes = await fetch(`${baseUrl}/api/admin/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'service@myangan.com', password: 'WrongPassword123!' }),
+    });
+    assert(invalidAdminPassRes.status === 401, 'POST /api/admin/login rejects wrong password with HTTP 401');
+
+    // 3. Valid Renter Credentials -> HTTP 403
     const nonAdminLoginRes = await fetch(`${baseUrl}/api/admin/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -192,11 +220,27 @@ async function runTestSuite() {
     });
     assert(nonAdminLoginRes.status === 403, 'POST /api/admin/login rejects non-admin users with HTTP 403');
 
+    // 4. Admin API without token -> HTTP 401
     const unauthAdminProvidersRes = await fetch(`${baseUrl}/api/admin/providers`);
     assert(unauthAdminProvidersRes.status === 401, 'GET /api/admin/providers rejects unauthenticated requests with HTTP 401');
 
-    const unauthAdminPropertiesRes = await fetch(`${baseUrl}/api/admin/properties`);
-    assert(unauthAdminPropertiesRes.status === 401, 'GET /api/admin/properties rejects unauthenticated requests with HTTP 401');
+    // 5. Admin API with spoofed x-user-email (no Bearer token) -> HTTP 401
+    const spoofedEmailRes = await fetch(`${baseUrl}/api/admin/providers`, {
+      headers: { 'x-user-email': 'service@myangan.com' },
+    });
+    assert(spoofedEmailRes.status === 401, 'GET /api/admin/providers ignores spoofed x-user-email header with HTTP 401');
+
+    // 6. Admin API with fake email:admin token format -> HTTP 401
+    const fakeTokenRes = await fetch(`${baseUrl}/api/admin/providers`, {
+      headers: { 'Authorization': 'Bearer service@myangan.com:admin' },
+    });
+    assert(fakeTokenRes.status === 401, 'GET /api/admin/providers rejects fake email:admin token format with HTTP 401');
+
+    // 7. Admin API with valid Bearer token -> HTTP 200
+    const validAdminProvidersRes = await fetch(`${baseUrl}/api/admin/providers`, {
+      headers: { 'Authorization': `Bearer ${adminToken}` },
+    });
+    assert(validAdminProvidersRes.status === 200, 'GET /api/admin/providers accepts valid admin Bearer token with HTTP 200');
 
     // 6. PHASE 2 PAYMENT & EMAIL AUTOMATION TESTS
     console.log('\n6. [Phase 2 Test] Payment Gateway & Webhook Endpoints');
