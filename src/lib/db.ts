@@ -1253,9 +1253,35 @@ export const dbService = {
         .eq('id', user.id)
         .single();
 
-      if (error || !data) {
-        // Fallback or create profile if auth user exists but table does not
-        const profile: UserProfile = {
+      let profileData = (data || null) as UserProfile | null;
+
+      // Always query user_roles table to resolve exact operational role from backend
+      try {
+        const { data: roleRow } = await supabase
+          .from('user_roles')
+          .select('role')
+          .eq('user_id', user.id)
+          .single();
+
+        if (roleRow?.role) {
+          const fetchedRole = roleRow.role as UserRole;
+          if (profileData) {
+            profileData = { ...profileData, role: fetchedRole };
+          } else {
+            profileData = {
+              id: user.id,
+              email: user.email || '',
+              name: user.user_metadata?.name || 'User',
+              role: fetchedRole,
+              phone: user.user_metadata?.phone || '',
+              created_at: user.created_at
+            };
+          }
+        }
+      } catch {}
+
+      if (!profileData) {
+        profileData = {
           id: user.id,
           email: user.email || '',
           name: user.user_metadata?.name || 'User',
@@ -1263,9 +1289,8 @@ export const dbService = {
           phone: user.user_metadata?.phone || '',
           created_at: user.created_at
         };
-        return profile;
       }
-      return data as UserProfile;
+      return profileData;
     } else if (isMockModeActive) {
       const u = safeLocalStorage.getItem('myangan_current_user');
       return safeJsonParse<UserProfile | null>(u, null);
@@ -1508,6 +1533,25 @@ export const dbService = {
       throw new Error(data.error || 'Password reset failed.');
     }
     return data.message || 'Your password has been changed successfully.';
+  },
+
+  async updatePassword(newPassword: string): Promise<string> {
+    if (!newPassword || newPassword.length < 8) {
+      throw new Error('Password must be at least 8 characters long.');
+    }
+    if (isRealSupabaseConfigured && supabase) {
+      const { error } = await supabase.auth.updateUser({ password: newPassword });
+      if (error) throw new Error(error.message);
+      return 'Your password has been updated successfully.';
+    } else {
+      const currentUser = await this.getCurrentUser();
+      if (currentUser?.email) {
+        const passwords = safeJsonParse<Record<string, string>>(safeLocalStorage.getItem('myangan_user_passwords'), {});
+        passwords[currentUser.email.toLowerCase()] = newPassword;
+        safeLocalStorage.setItem('myangan_user_passwords', JSON.stringify(passwords));
+      }
+      return 'Password updated successfully.';
+    }
   },
 
   async signIn(email: string, password?: string): Promise<UserProfile> {

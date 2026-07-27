@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
 import { UserRole } from '../../types';
 import { dbService } from '../../lib/db';
 import { Home, ShieldCheck, Mail, Lock, User, Phone, CheckCircle2, ArrowLeft } from 'lucide-react';
@@ -15,6 +16,7 @@ interface AuthViewProps {
 }
 
 export default function AuthView({ navigateTo, onAuthSuccess, initialRole = 'renter' }: AuthViewProps) {
+  const location = useLocation();
   const [isSignUp, setIsSignUp] = useState(false);
   
   // Sign In inputs
@@ -37,7 +39,9 @@ export default function AuthView({ navigateTo, onAuthSuccess, initialRole = 'ren
   const [cooldown, setCooldown] = useState(0);
 
   // Forgot Password Recovery State
-  const [isForgotPassword, setIsForgotPassword] = useState(false);
+  const [isForgotPassword, setIsForgotPassword] = useState(() => {
+    return !!(location.state as any)?.recovery;
+  });
   const [recoveryStep, setRecoveryStep] = useState<1 | 2 | 3 | 4>(1);
   const [recoveryEmail, setRecoveryEmail] = useState('');
   const [recoveryOtpCode, setRecoveryOtpCode] = useState('');

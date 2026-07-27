@@ -3,7 +3,7 @@ import { Routes, Route, useNavigate, useLocation, useParams } from 'react-router
 import { Helmet } from 'react-helmet-async';
 import { AlertTriangle, Info, X } from 'lucide-react';
 import { UserProfile, UserRole, Property } from './types';
-import { dbService, isMockModeActive } from './lib/db';
+import { dbService, isMockModeActive, isRealSupabaseConfigured, supabase } from './lib/db';
 
 // Views
 import LandingView from './components/views/LandingView';
@@ -17,6 +17,7 @@ import FavoritesView from './components/views/FavoritesView';
 import BrokersView from './components/views/BrokersView';
 import AdminView from './components/views/AdminView';
 import AdminLoginView from './components/views/AdminLoginView';
+import ResetPasswordView from './components/views/ResetPasswordView';
 import WaitlistView from './components/views/WaitlistView';
 import CompareView from './components/views/CompareView';
 import LeaseAgreementView from './components/views/LeaseAgreementView';
@@ -122,19 +123,83 @@ export default function App() {
     }
   };
 
-  // Sync user on mount
+  // Sync user on mount & handle Supabase auth events
   useEffect(() => {
+    let subscription: any = null;
+
     const initApp = async () => {
       try {
+        const hash = window.location.hash || '';
+        const search = window.location.search || '';
+
+        // Requirement 2: Detect recovery token in URL on mount
+        if (hash.includes('type=recovery') || search.includes('type=recovery')) {
+          console.log('[Supabase Auth] Password recovery URL detected on init');
+          navigate('/reset-password', { replace: true });
+          setLoading(false);
+          return;
+        }
+
         const user = await dbService.getCurrentUser();
         setCurrentUser(user);
+
+        // Redirect admin users if accessing admin login while authenticated
+        if (user && user.role === 'admin') {
+          if (location.pathname === '/admin/login' || location.pathname === '/admin') {
+            navigate('/admin/dashboard', { replace: true });
+          }
+        }
       } catch (err) {
         console.error('Error during App initialization:', err);
       } finally {
         setLoading(false);
       }
     };
+
+    if (isRealSupabaseConfigured && supabase) {
+      const { data } = supabase.auth.onAuthStateChange(async (event, session) => {
+        console.log(`[Supabase Auth Listener] Event: ${event}`);
+
+        if (event === 'PASSWORD_RECOVERY') {
+          // Requirement 2: redirect ONLY to /reset-password, never to /dashboard or /admin/dashboard
+          console.log('[Supabase Auth Listener] PASSWORD_RECOVERY triggered -> Redirecting to /reset-password');
+          navigate('/reset-password', { replace: true });
+        } else if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED' || event === 'INITIAL_SESSION') {
+          const hash = window.location.hash || '';
+          if (hash.includes('type=recovery')) {
+            navigate('/reset-password', { replace: true });
+            return;
+          }
+
+          try {
+            const user = await dbService.getCurrentUser();
+            if (user) {
+              setCurrentUser(user);
+
+              // Admin routing protection
+              if (user.role === 'admin') {
+                if (window.location.pathname === '/admin/login' || window.location.pathname === '/admin') {
+                  navigate('/admin/dashboard', { replace: true });
+                }
+              }
+            }
+          } catch (err) {
+            console.error('Error syncing auth state user profile:', err);
+          }
+        } else if (event === 'SIGNED_OUT') {
+          setCurrentUser(null);
+        }
+      });
+      subscription = data?.subscription;
+    }
+
     initApp();
+
+    return () => {
+      if (subscription) {
+        subscription.unsubscribe();
+      }
+    };
   }, []);
 
   // Google Analytics setup
@@ -179,6 +244,8 @@ export default function App() {
       navigate(`/properties/${params?.id}`, { state: params });
     } else if (route === 'auth') {
       navigate('/auth', { state: params });
+    } else if (route === 'reset-password') {
+      navigate('/reset-password', { state: params });
     } else if (route === 'favorites') {
       navigate('/favorites', { state: params });
     } else if (route === 'compare') {
@@ -191,8 +258,10 @@ export default function App() {
       navigate('/dashboard', { state: params });
     } else if (route === 'onboarding') {
       navigate('/onboarding', { state: params });
-    } else if (route === 'admin') {
-      navigate('/admin', { state: params });
+    } else if (route === 'admin' || route === 'admin-dashboard') {
+      navigate('/admin/dashboard', { state: params });
+    } else if (route === 'admin-login') {
+      navigate('/admin/login', { state: params });
     } else if (route === 'waitlist') {
       navigate('/waitlist', { state: params });
     } else if (route === 'terms') {
@@ -393,6 +462,18 @@ export default function App() {
             }
           />
           <Route
+            path="/reset-password"
+            element={
+              <>
+                <Helmet>
+                  <title>Reset Password | MyAngan</title>
+                  <meta name="robots" content="noindex, nofollow" />
+                </Helmet>
+                <ResetPasswordView navigateTo={navigateTo} onAuthSuccess={handleAuthSuccess} />
+              </>
+            }
+          />
+          <Route
             path="/onboarding"
             element={
               <>
@@ -418,7 +499,11 @@ export default function App() {
                   <meta name="description" content="Manage your property listings, view leads, and interact with renters on the MyAngan landlord dashboard." />
                   <link rel="canonical" href="https://myangan.com/dashboard" />
                 </Helmet>
-                <DashboardView navigateTo={navigateTo} currentUser={currentUser} onOpenMaintenance={() => setIsMaintenanceOpen(true)} />
+                {currentUser?.role === 'admin' ? (
+                  <AdminView navigateTo={navigateTo} currentUser={currentUser} />
+                ) : (
+                  <DashboardView navigateTo={navigateTo} currentUser={currentUser} onOpenMaintenance={() => setIsMaintenanceOpen(true)} />
+                )}
               </>
             }
           />
@@ -443,7 +528,11 @@ export default function App() {
                   <title>Admin Login | MyAngan</title>
                   <meta name="robots" content="noindex, nofollow" />
                 </Helmet>
-                <AdminLoginView navigateTo={navigateTo} onAdminLoginSuccess={handleAuthSuccess} />
+                {currentUser?.role === 'admin' ? (
+                  <AdminView navigateTo={navigateTo} currentUser={currentUser} />
+                ) : (
+                  <AdminLoginView navigateTo={navigateTo} onAdminLoginSuccess={handleAuthSuccess} />
+                )}
               </>
             }
           />
@@ -455,7 +544,11 @@ export default function App() {
                   <title>Admin Dashboard | MyAngan</title>
                   <meta name="robots" content="noindex, nofollow" />
                 </Helmet>
-                <AdminView navigateTo={navigateTo} currentUser={currentUser} />
+                {currentUser?.role === 'admin' ? (
+                  <AdminView navigateTo={navigateTo} currentUser={currentUser} />
+                ) : (
+                  <AdminLoginView navigateTo={navigateTo} onAdminLoginSuccess={handleAuthSuccess} />
+                )}
               </>
             }
           />
@@ -467,7 +560,7 @@ export default function App() {
                   <title>Admin Panel | MyAngan</title>
                   <meta name="robots" content="noindex, nofollow" />
                 </Helmet>
-                {currentUser?.role === 'admin' || currentUser?.account_category === 'admin' ? (
+                {currentUser?.role === 'admin' ? (
                   <AdminView navigateTo={navigateTo} currentUser={currentUser} />
                 ) : (
                   <AdminLoginView navigateTo={navigateTo} onAdminLoginSuccess={handleAuthSuccess} />

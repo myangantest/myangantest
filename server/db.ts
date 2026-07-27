@@ -517,30 +517,33 @@ export const dbServiceServer = {
 
         return { property, owner: owner || { id: property.owner_id, name: 'Owner', email: '', phone: '' } };
       }
-      if (!isServerMockActive && pError) throw pError;
     }
 
-    if (isServerMockActive) {
-      const mockProp = memoryStore.properties.find(p => p.id === id);
-      if (mockProp) {
-        const owner = memoryStore.users.find(u => u.id === mockProp.owner_id) || {
-          id: mockProp.owner_id,
-          name: 'Owner Agent',
-          phone: '+919999912345',
-          email: 'owner@myangan.com',
-        };
-        return { property: mockProp, owner };
-      }
+    const mockProp = memoryStore.properties.find(p => p.id === id);
+    if (mockProp) {
+      const owner = memoryStore.users.find(u => u.id === mockProp.owner_id) || {
+        id: mockProp.owner_id,
+        name: 'Owner Agent',
+        phone: '+919999912345',
+        email: 'owner@myangan.com',
+      };
+      return { property: mockProp, owner };
     }
     return null;
   },
 
-  seedProperty(property: any, owner: any) {
-    if (isServerMockActive) {
-      if (!memoryStore.properties.some(p => p.id === property.id)) {
-        memoryStore.properties.push(property);
-      }
-      if (!memoryStore.users.some(u => u.id === owner.id)) {
+  seedProperty(property: any, owner?: any) {
+    const existingP = memoryStore.properties.findIndex(p => p.id === property.id);
+    if (existingP >= 0) {
+      memoryStore.properties[existingP] = { ...memoryStore.properties[existingP], ...property };
+    } else {
+      memoryStore.properties.push(property);
+    }
+    if (owner) {
+      const existingU = memoryStore.users.findIndex(u => u.id === owner.id);
+      if (existingU >= 0) {
+        memoryStore.users[existingU] = { ...memoryStore.users[existingU], ...owner };
+      } else {
         memoryStore.users.push(owner);
       }
     }
@@ -829,6 +832,8 @@ export const dbServiceServer = {
   }) {
     const { propertyId, reviewerId, newStatus, decision, notes } = params;
     const supabase = getSupabaseClient();
+    const prop = memoryStore.properties.find(p => p.id === propertyId);
+    let prevStatus = prop?.approval_status || 'pending_review';
 
     const updates = {
       approval_status: newStatus,
@@ -843,7 +848,9 @@ export const dbServiceServer = {
         .eq('id', propertyId)
         .maybeSingle();
 
-      const prevStatus = currentProp?.approval_status || 'pending_review';
+      if (currentProp?.approval_status) {
+        prevStatus = currentProp.approval_status;
+      }
 
       await supabase
         .from('properties')
@@ -861,17 +868,16 @@ export const dbServiceServer = {
           notes: notes || null,
           created_at: new Date().toISOString(),
         }]);
-
-      await this.createAuditLog({
-        actor_id: reviewerId,
-        action: `listing_${decision}`,
-        target_type: 'property',
-        target_id: propertyId,
-        details: { previous_status: prevStatus, new_status: newStatus, decision, notes },
-      });
     }
 
-    const prop = memoryStore.properties.find(p => p.id === propertyId);
+    await this.createAuditLog({
+      actor_id: reviewerId,
+      action: `listing_${decision}`,
+      target_type: 'property',
+      target_id: propertyId,
+      details: { previous_status: prevStatus, new_status: newStatus, decision, notes },
+    });
+
     if (prop) {
       prop.approval_status = newStatus;
       prop.review_notes = notes || null;
@@ -881,7 +887,7 @@ export const dbServiceServer = {
       id: 'lr-' + Math.random().toString(36).substr(2, 9),
       property_id: propertyId,
       reviewer_id: reviewerId || null,
-      previous_status: 'pending_review',
+      previous_status: prevStatus,
       new_status: newStatus,
       decision: decision,
       notes: notes || null,
@@ -894,15 +900,18 @@ export const dbServiceServer = {
 
   async getAuditLogs() {
     const supabase = getSupabaseClient();
+    let remoteLogs: any[] = [];
     if (supabase) {
-      const { data, error } = await supabase
-        .from('audit_logs')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(100);
+      try {
+        const { data, error } = await supabase
+          .from('audit_logs')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(100);
 
-      if (!error && data) return data;
+        if (!error && data) remoteLogs = data;
+      } catch {}
     }
-    return memoryStore.audit_logs;
+    return remoteLogs.length > 0 ? remoteLogs : memoryStore.audit_logs;
   },
 };
