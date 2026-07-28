@@ -183,9 +183,13 @@ export const dbServiceServer = {
   async createUserProfile(profile: {
     id: string;
     email: string;
-    name: string;
-    phone: string;
-    role: string;
+    name?: string;
+    phone?: string;
+    role?: string;
+    account_category?: string;
+    onboarding_status?: string;
+    provider_type?: string;
+    account_status?: string;
     is_verified?: boolean;
     is_subscribed?: boolean;
   }) {
@@ -264,6 +268,7 @@ export const dbServiceServer = {
         .from('profiles')
         .update({
           provider_type: providerType,
+          account_status: 'pending_verification',
           onboarding_status: 'complete',
           updated_at: now
         })
@@ -274,13 +279,25 @@ export const dbServiceServer = {
       if (!error && data) {
         await supabase
           .from('user_roles')
-          .upsert({ user_id: userId, role: providerType }, { onConflict: 'user_id,role' });
+          .upsert({ user_id: userId, role: providerType }, { onConflict: 'user_id' });
+
+        await supabase
+          .from('provider_verification_reviews')
+          .insert([{
+            user_id: userId,
+            provider_type: providerType,
+            previous_status: null,
+            new_status: 'pending_verification',
+            notes: 'Initial provider registration',
+            created_at: now,
+          }]);
 
         return {
           ...data,
           name: data.full_name,
           role: providerType,
           provider_type: providerType,
+          account_status: 'pending_verification',
           onboarding_status: 'complete'
         };
       }
@@ -293,12 +310,25 @@ export const dbServiceServer = {
     if (user) {
       (user as any).provider_type = providerType;
       (user as any).onboarding_status = 'complete';
+      (user as any).account_status = 'pending_verification';
       user.role = providerType;
-      return user;
+    } else {
+      const mockUser = { id: userId, provider_type: providerType, onboarding_status: 'complete', account_status: 'pending_verification', role: providerType };
+      memoryStore.users.push(mockUser as any);
     }
-    const mockUser = { id: userId, provider_type: providerType, onboarding_status: 'complete', role: providerType };
-    memoryStore.users.push(mockUser as any);
-    return mockUser;
+
+    memoryStore.provider_verification_reviews.push({
+      id: 'pvr-' + Math.random().toString(36).substr(2, 9),
+      user_id: userId,
+      provider_type: providerType,
+      reviewer_id: null,
+      previous_status: null,
+      new_status: 'pending_verification',
+      notes: 'Initial provider registration',
+      created_at: now,
+    });
+
+    return memoryStore.users.find(u => u.id === userId);
   },
 
   async activateAccountAfterOtpVerification(userId: string) {
@@ -593,6 +623,42 @@ export const dbServiceServer = {
     }
   },
 
+  async createProperty(propertyData: any) {
+    const supabase = getSupabaseClient();
+    const now = new Date().toISOString();
+
+    const payload = {
+      ...propertyData,
+      approval_status: 'pending_review',
+      status: 'pending',
+      review_notes: null,
+      created_at: propertyData.created_at || now,
+      updated_at: now,
+    };
+
+    if (supabase) {
+      const { data, error } = await supabase
+        .from('properties')
+        .insert([payload])
+        .select()
+        .single();
+
+      if (!error && data) {
+        return data;
+      }
+      if (!isServerMockActive && !isTableMissingError(error)) {
+        throw error;
+      }
+    }
+
+    const newProp = {
+      id: propertyData.id || 'prop_' + Math.random().toString(36).substr(2, 9),
+      ...payload,
+    };
+    memoryStore.properties.push(newProp);
+    return newProp;
+  },
+
   async createPasswordResetToken(tokenData: {
     user_id: string;
     token_hash: string;
@@ -786,9 +852,11 @@ export const dbServiceServer = {
     const { userId, reviewerId, newStatus, notes } = params;
     const supabase = getSupabaseClient();
 
-    const isApproved = newStatus === 'approved';
+    const isApproved = newStatus === 'approved' || newStatus === 'restore';
+    const effectiveAccountStatus = isApproved ? 'active' : newStatus;
+
     const profileUpdates = {
-      account_status: newStatus,
+      account_status: effectiveAccountStatus,
       is_verified: isApproved,
       updated_at: new Date().toISOString(),
     };
@@ -815,23 +883,24 @@ export const dbServiceServer = {
           provider_type: providerType,
           reviewer_id: reviewerId || null,
           previous_status: prevStatus,
-          new_status: newStatus,
+          new_status: effectiveAccountStatus,
           notes: notes || null,
           created_at: new Date().toISOString(),
         }]);
 
-      await this.createAuditLog({
-        actor_id: reviewerId,
-        action: `provider_${newStatus}`,
-        target_type: 'provider',
-        target_id: userId,
-        details: { previous_status: prevStatus, new_status: newStatus, notes },
-      });
     }
+
+    await this.createAuditLog({
+      actor_id: reviewerId,
+      action: `provider_${newStatus}`,
+      target_type: 'provider',
+      target_id: userId,
+      details: { previous_status: 'pending', new_status: effectiveAccountStatus, notes },
+    });
 
     const user = memoryStore.users.find(u => u.id === userId);
     if (user) {
-      user.account_status = newStatus;
+      user.account_status = effectiveAccountStatus;
       user.is_verified = isApproved;
     }
     const reviewRecord = {
@@ -840,13 +909,13 @@ export const dbServiceServer = {
       provider_type: user?.provider_type || 'owner',
       reviewer_id: reviewerId || null,
       previous_status: 'pending',
-      new_status: newStatus,
+      new_status: effectiveAccountStatus,
       notes: notes || null,
       created_at: new Date().toISOString(),
     };
     memoryStore.provider_verification_reviews.push(reviewRecord);
 
-    return { success: true, user: user || { id: userId, account_status: newStatus, is_verified: isApproved } };
+    return { success: true, user: user || { id: userId, account_status: effectiveAccountStatus, is_verified: isApproved } };
   },
 
   async getAdminProperties(statusFilter?: string) {
@@ -879,8 +948,12 @@ export const dbServiceServer = {
     const prop = memoryStore.properties.find(p => p.id === propertyId);
     let prevStatus = prop?.approval_status || 'pending_review';
 
+    const isApproved = decision === 'approve' || decision === 'restore';
+    const operationalStatus = isApproved ? 'active' : 'pending';
+
     const updates = {
       approval_status: newStatus,
+      status: operationalStatus,
       review_notes: notes || null,
       updated_at: new Date().toISOString(),
     };
@@ -924,6 +997,7 @@ export const dbServiceServer = {
 
     if (prop) {
       prop.approval_status = newStatus;
+      prop.status = operationalStatus;
       prop.review_notes = notes || null;
     }
 
@@ -939,7 +1013,7 @@ export const dbServiceServer = {
     };
     memoryStore.listing_reviews.push(reviewRecord);
 
-    return { success: true, property: prop || { id: propertyId, approval_status: newStatus } };
+    return { success: true, property: prop || { id: propertyId, approval_status: newStatus, status: operationalStatus } };
   },
 
   async getAuditLogs() {

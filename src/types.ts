@@ -47,6 +47,8 @@ export interface Property {
   image_urls: string[];
   is_verified: boolean;
   status: PropertyStatus;
+  approval_status?: string;
+  review_notes?: string | null;
   created_at: string;
   is_featured?: boolean;
 }

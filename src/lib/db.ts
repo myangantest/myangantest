@@ -1857,7 +1857,9 @@ export const dbService = {
       owner_id: currentUser.id, // Always bind property to the authenticated creator's ID
       id: isRealSupabaseConfigured ? undefined : 'prop-gen-' + Math.random().toString(36).substr(2, 9),
       is_verified: false,
+      approval_status: 'pending_review',
       status: 'pending',
+      review_notes: null,
       created_at: new Date().toISOString()
     } as unknown as Property;
 
@@ -1952,6 +1954,15 @@ export const dbService = {
 
       return props[index];
     }
+  },
+
+  async resubmitProperty(id: string, updates: Partial<Property> = {}): Promise<Property> {
+    return this.updateProperty(id, {
+      ...updates,
+      approval_status: 'pending_review',
+      status: 'pending',
+      review_notes: null
+    });
   },
 
   async deleteProperty(id: string): Promise<void> {

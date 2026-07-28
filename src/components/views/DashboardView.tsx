@@ -303,6 +303,23 @@ export default function DashboardView({ navigateTo, currentUser, onOpenMaintenan
 
                     {/* Actions Panel */}
                     <div className="flex gap-2 items-center w-full sm:w-auto shrink-0 justify-end border-t sm:border-t-0 pt-3 sm:pt-0">
+                      {((p as any).approval_status === 'changes_requested' || (p as any).approval_status === 'rejected') && (
+                        <button
+                          onClick={async () => {
+                            try {
+                              await dbService.resubmitProperty(p.id);
+                              alert('Property resubmitted for review successfully.');
+                              const props = await dbService.getOwnerProperties(currentUser.id);
+                              setProperties(props);
+                            } catch (err: any) {
+                              alert(err.message || 'Failed to resubmit property.');
+                            }
+                          }}
+                          className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-xs font-bold cursor-pointer flex items-center gap-1 shadow-xs"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" /> Resubmit
+                        </button>
+                      )}
                       <button
                         onClick={() => { setEditingProp(p); setEditStatus(p.status); }}
                         className="px-3 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 cursor-pointer flex items-center gap-1"
