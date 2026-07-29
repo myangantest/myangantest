@@ -153,6 +153,16 @@ export default function PostPropertyView({ navigateTo, currentUser }: PostProper
     }
   };
 
+  useEffect(() => {
+    return () => {
+      previewUrls.forEach(url => {
+        if (url && url.startsWith('blob:')) {
+          URL.revokeObjectURL(url);
+        }
+      });
+    };
+  }, [previewUrls]);
+
   const removeUploadedFile = (index: number) => {
     const urlToRemove = previewUrls[index];
     if (urlToRemove && urlToRemove.startsWith('blob:')) {

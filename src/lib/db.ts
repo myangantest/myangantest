@@ -1738,11 +1738,12 @@ export const dbService = {
         acc[u.id] = !!u.is_subscribed;
         return acc;
       }, {});
-      return rawProps.map(p => {
+      const decoratedProps = rawProps.map(p => {
         const isSubscribed = !!userSubMap[p.owner_id];
         const isNew = new Date(p.created_at) >= new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
         return { ...p, is_featured: isSubscribed && isNew };
       });
+      return await this.attachSignedImageUrls(decoratedProps);
     } else {
       const users = getMockData<UserProfile>('myangan_users');
       return getMockData<Property>('myangan_properties').map(p => {
@@ -1754,6 +1755,52 @@ export const dbService = {
         (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       );
     }
+  },
+
+  async attachSignedImageUrls(properties: Property[]): Promise<Property[]> {
+    if (!properties || properties.length === 0 || !isRealSupabaseConfigured || !supabase) return properties;
+    try {
+      for (const prop of properties) {
+        const { data: imageRows } = await supabase
+          .from('property_images')
+          .select('storage_path, display_order')
+          .eq('property_id', prop.id)
+          .order('display_order', { ascending: true });
+
+        const rawPaths: string[] = [];
+        if (imageRows && imageRows.length > 0) {
+          for (const r of imageRows) {
+            if (r.storage_path) rawPaths.push(r.storage_path);
+          }
+        } else if (Array.isArray(prop.image_urls)) {
+          for (const url of prop.image_urls) {
+            if (url && typeof url === 'string' && !url.startsWith('blob:')) {
+              const cleanPath = url.includes('property-images/') ? url.split('property-images/')[1] : url;
+              if (cleanPath) rawPaths.push(cleanPath);
+            }
+          }
+        }
+
+        if (rawPaths.length > 0) {
+          const signedUrls: string[] = [];
+          for (const path of rawPaths) {
+            const { data, error } = await supabase.storage
+              .from('property-images')
+              .createSignedUrl(path, 3600);
+            if (!error && data?.signedUrl) {
+              signedUrls.push(data.signedUrl);
+            }
+          }
+          if (signedUrls.length > 0) {
+            (prop as any).signed_image_urls = signedUrls;
+            prop.image_urls = signedUrls; // Replace raw paths with valid signed URLs for UI rendering
+          }
+        }
+      }
+    } catch (err: any) {
+      console.warn('[Signed URL Helper Notice]', err.message);
+    }
+    return properties;
   },
 
   async getOwnerProperties(ownerId: string): Promise<Property[]> {
@@ -1817,8 +1864,10 @@ export const dbService = {
         is_featured: isSubscribed && isNew
       } as Property;
 
+      const [signedProp] = await this.attachSignedImageUrls([decoratedProperty]);
+
       return {
-        property: decoratedProperty,
+        property: signedProp || decoratedProperty,
         owner: profile
       };
     } else {
@@ -1847,7 +1896,13 @@ export const dbService = {
     }
   },
 
-  async uploadPropertyImages(files: File[], propertyId: string): Promise<string[]> {
+  async uploadPropertyImages(files: File[], propertyId: string): Promise<Array<{
+    storage_path: string;
+    file_name: string;
+    file_size_bytes: number;
+    mime_type: string;
+    display_order: number;
+  }>> {
     if (!files || files.length === 0) return [];
     if (files.length > 8) throw new Error('Validation Error: Maximum 8 images allowed.');
 
@@ -1866,50 +1921,69 @@ export const dbService = {
       }
     }
 
-    const uploadedPaths: string[] = [];
+    const uploadedDescriptors: Array<{
+      storage_path: string;
+      file_name: string;
+      file_size_bytes: number;
+      mime_type: string;
+      display_order: number;
+    }> = [];
 
     if (isRealSupabaseConfigured && supabase) {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (!token) throw new Error('Authentication Error: Session token missing. Please sign in again.');
+
       try {
         for (let i = 0; i < files.length; i++) {
           const file = files[i];
-          const fileExt = file.name.split('.').pop()?.toLowerCase() || 'webp';
-          const sanitizedOriginal = file.name.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 20);
-          const uniqueId = `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-          const objectPath = `${currentUser.id}/${propertyId}/${uniqueId}_${sanitizedOriginal}.${fileExt}`;
+          const formData = new FormData();
+          formData.append('file', file);
+          formData.append('property_id', propertyId);
 
-          const { data, error } = await supabase.storage
-            .from('property-images')
-            .upload(objectPath, file, {
-              contentType: file.type,
-              upsert: true
-            });
+          const response = await fetch('/api/properties/upload-image', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`
+            },
+            body: formData
+          });
 
-          if (error || !data) {
-            console.error('[Storage Upload Error]', error);
-            // Rollback uploaded images in this batch
-            if (uploadedPaths.length > 0) {
-              await supabase.storage.from('property-images').remove(uploadedPaths);
+          const resData = await response.json().catch(() => ({}));
+          if (!response.ok || !resData.success) {
+            // Rollback uploaded files
+            if (uploadedDescriptors.length > 0) {
+              const pathsToDelete = uploadedDescriptors.map(d => d.storage_path);
+              await fetch('/api/properties/delete-images', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ paths: pathsToDelete })
+              }).catch(() => {});
             }
-            throw new Error(`Storage Error: Failed to upload image '${file.name}': ${error?.message || 'Upload failed'}`);
+            throw new Error(resData.error || `Failed to upload image '${file.name}'.`);
           }
 
-          uploadedPaths.push(data.path);
+          uploadedDescriptors.push({
+            storage_path: resData.storage_path,
+            file_name: resData.file_name || file.name,
+            file_size_bytes: resData.file_size_bytes || file.size,
+            mime_type: resData.mime_type || file.type,
+            display_order: i
+          });
         }
 
-        return uploadedPaths.map(p => `property-images/${p}`);
+        return uploadedDescriptors;
       } catch (err: any) {
-        // Atomic Rollback
-        if (uploadedPaths.length > 0 && supabase) {
-          try {
-            await supabase.storage.from('property-images').remove(uploadedPaths);
-          } catch {
-            // Ignore secondary cleanup error
-          }
-        }
         throw err;
       }
     } else {
-      return files.map((f, i) => `property-images/${currentUser.id}/${propertyId}/demo-${i + 1}.webp`);
+      return files.map((f, i) => ({
+        storage_path: `${currentUser.id}/${propertyId}/demo-${i + 1}.webp`,
+        file_name: f.name,
+        file_size_bytes: f.size,
+        mime_type: f.type || 'image/webp',
+        display_order: i
+      }));
     }
   },
 
@@ -1920,18 +1994,20 @@ export const dbService = {
       throw new Error('Unauthorized: Renters are not allowed to post properties.');
     }
 
-    // REMOVED 3-listing cap restriction for all users
-
     let finalImageUrls = [...(property.image_urls || [])];
     // Strip temporary browser blob URLs
     finalImageUrls = finalImageUrls.filter(url => !url.startsWith('blob:'));
 
     const propertyId = 'prop_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
 
-    // Upload physical File objects if provided
+    let uploadedDescriptors: any[] = [];
+
+    // Upload physical File objects if provided via real server endpoint
     if (property.imageFiles && property.imageFiles.length > 0) {
-      const uploadedStoragePaths = await this.uploadPropertyImages(property.imageFiles, propertyId);
-      finalImageUrls = [...finalImageUrls, ...uploadedStoragePaths];
+      uploadedDescriptors = await this.uploadPropertyImages(property.imageFiles, propertyId);
+      for (const desc of uploadedDescriptors) {
+        finalImageUrls.push(`property-images/${desc.storage_path}`);
+      }
     }
 
     if (isRealSupabaseConfigured && supabase) {
@@ -1949,6 +2025,7 @@ export const dbService = {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
+          property_id: propertyId,
           title: property.title,
           description: property.description,
           city: property.city,
@@ -1961,7 +2038,8 @@ export const dbService = {
           deposit_amount: property.deposit_amount,
           latitude: property.latitude,
           longitude: property.longitude,
-          image_urls: finalImageUrls
+          image_urls: finalImageUrls,
+          uploaded_images: uploadedDescriptors
         })
       });
 
@@ -1975,18 +2053,13 @@ export const dbService = {
 
       if (!response.ok) {
         // Rollback uploaded storage files if endpoint returns failure
-        if (finalImageUrls.length > 0) {
-          const storagePathsToDelete = finalImageUrls
-            .filter(u => u.startsWith('property-images/'))
-            .map(u => u.replace('property-images/', ''));
-
-          if (storagePathsToDelete.length > 0) {
-            try {
-              await supabase.storage.from('property-images').remove(storagePathsToDelete);
-            } catch {
-              // Ignore rollback cleanup error
-            }
-          }
+        if (uploadedDescriptors.length > 0) {
+          const storagePathsToDelete = uploadedDescriptors.map(d => d.storage_path);
+          await fetch('/api/properties/delete-images', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ paths: storagePathsToDelete })
+          }).catch(() => {});
         }
         const reqRef = resData.requestId ? ` (Reference: ${resData.requestId})` : '';
         const errorMessage = (resData.error || `Submission failed with status ${response.status}`) + reqRef;
@@ -2010,7 +2083,6 @@ export const dbService = {
       const props = getMockData<Property>('myangan_properties');
       props.push(newProp);
       saveMockData('myangan_properties', props);
-
       return newProp;
     }
   },

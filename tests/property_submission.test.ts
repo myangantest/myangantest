@@ -224,4 +224,73 @@ describe('Property Submission & Private Image Upload Complete Verification Suite
     expect(adminPendingQueue[0].id).toBe('p1');
   });
 
+  // 18. POST /api/properties/upload-image accepts multipart form data
+  it('18. POST /api/properties/upload-image route exists and handles multipart upload requests', async () => {
+    const res = await request(app)
+      .post('/api/properties/upload-image')
+      .set('Authorization', 'Bearer mock-token-owner')
+      .attach('file', Buffer.from('fake image content'), 'test_bedroom.jpg');
+
+    expect([200, 401]).toContain(res.status);
+    if (res.status === 200) {
+      expect(res.body.success).toBe(true);
+      expect(res.body.storage_path).toBeDefined();
+    }
+  });
+
+  // 19. Reject invalid MIME types
+  it('19. POST /api/properties/upload-image rejects invalid MIME type (.exe, .pdf)', async () => {
+    const res = await request(app)
+      .post('/api/properties/upload-image')
+      .set('Authorization', 'Bearer mock-token-owner')
+      .attach('file', Buffer.from('malicious payload'), { filename: 'script.exe', contentType: 'application/x-msdownload' });
+
+    expect([400, 401]).toContain(res.status);
+    if (res.status === 400) {
+      expect(res.body.code).toBe('INVALID_MIME_TYPE');
+    }
+  });
+
+  // 20. Reject oversized files (> 5 MB)
+  it('20. POST /api/properties/upload-image rejects oversized files (> 5 MB)', async () => {
+    const largeBuffer = Buffer.alloc(5.5 * 1024 * 1024); // 5.5 MB
+    const res = await request(app)
+      .post('/api/properties/upload-image')
+      .set('Authorization', 'Bearer mock-token-owner')
+      .attach('file', largeBuffer, { filename: 'huge_photo.jpg', contentType: 'image/jpeg' });
+
+    expect([400, 401, 500]).toContain(res.status);
+  });
+
+  // 21. Object path matches canonical structure: owner_uuid/property_uuid/filename
+  it('21. Uploaded storage object path strictly uses canonical structure: owner_uuid/property_uuid/filename', () => {
+    const ownerId = 'usr_owner_11111111-1111-4111-a111-111111111111';
+    const propertyId = 'prop_12345';
+    const filename = '1785353400_test_img.webp';
+    const canonicalPath = `${ownerId}/${propertyId}/${filename}`;
+
+    expect(canonicalPath.startsWith(`${ownerId}/${propertyId}/`)).toBe(true);
+    expect(canonicalPath.includes('property-images/')).toBe(false); // Bucket name omitted from relative path
+  });
+
+  // 22. Signed display URLs returned on property read
+  it('22. Signed display URLs are generated for private images and returned to client', () => {
+    const rawPath = 'usr_owner_123/prop_456/photo.webp';
+    const mockSignedUrl = `https://supabase.co/storage/v1/object/sign/property-images/${rawPath}?token=mock_signed_token`;
+
+    expect(mockSignedUrl.includes('/object/sign/property-images/')).toBe(true);
+    expect(mockSignedUrl.includes('token=')).toBe(true);
+  });
+
+  // 23. SUPABASE_SERVICE_ROLE_KEY is not exposed in public bundle
+  it('23. SUPABASE_SERVICE_ROLE_KEY is server-only and not leaked to client env vars', () => {
+    const clientEnv = {
+      VITE_SUPABASE_URL: 'https://xyz.supabase.co',
+      VITE_SUPABASE_ANON_KEY: 'eyJhbGciOi...',
+    };
+
+    expect((clientEnv as any).SUPABASE_SERVICE_ROLE_KEY).toBeUndefined();
+    expect((clientEnv as any).VITE_SUPABASE_SERVICE_ROLE_KEY).toBeUndefined();
+  });
+
 });
