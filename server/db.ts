@@ -878,18 +878,15 @@ export const dbServiceServer = {
         .update(profileUpdates)
         .eq('id', userId);
 
-      await supabase
-        .from('provider_verification_reviews')
-        .insert([{
-          user_id: userId,
-          provider_type: providerType,
-          reviewer_id: reviewerId || null,
-          previous_status: prevStatus,
-          new_status: effectiveAccountStatus,
-          notes: notes || null,
-          created_at: new Date().toISOString(),
-        }]);
-
+      if (isApproved && (providerType === 'owner' || providerType === 'broker')) {
+        try {
+          await supabase
+            .from('user_roles')
+            .upsert({ user_id: userId, role: providerType }, { onConflict: 'user_id' });
+        } catch (rErr: any) {
+          console.warn(`[reviewProviderAccount] Non-fatal user_roles upsert notice for ${userId}:`, rErr.message);
+        }
+      }
     }
 
     await this.createAuditLog({

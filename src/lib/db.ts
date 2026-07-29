@@ -1461,7 +1461,7 @@ export const dbService = {
         .single();
 
       if (!error && data) {
-        await supabase.from('user_roles').upsert({ user_id: user.id, role: providerType }, { onConflict: 'user_id,role' });
+        await supabase.from('user_roles').upsert({ user_id: user.id, role: providerType }, { onConflict: 'user_id' });
         return {
           ...user,
           role: providerType,
