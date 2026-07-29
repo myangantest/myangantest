@@ -1,7 +1,24 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { app } from '../server.js';
+import type { Server } from 'http';
 
 describe('Legacy LocalStorage Data Migration System Tests', () => {
-  const baseUrl = 'http://127.0.0.1:3000';
+  let server: Server;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    return new Promise<void>((resolve) => {
+      server = app.listen(0, () => {
+        const port = (server.address() as any).port;
+        baseUrl = `http://127.0.0.1:${port}`;
+        resolve();
+      });
+    });
+  });
+
+  afterAll(async () => {
+    if (server) server.close();
+  });
 
   it('Unauthorized migration attempt returns 403 Forbidden for non-admin', async () => {
     const res = await fetch(`${baseUrl}/api/admin/migrate-legacy-data`, {

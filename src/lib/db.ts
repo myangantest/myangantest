@@ -1619,7 +1619,11 @@ export const dbService = {
   } = {}): Promise<Property[]> {
     if (isRealSupabaseConfigured && supabase) {
       try {
-        let query = supabase.from('properties').select('*').eq('status', 'active').order('created_at', { ascending: false });
+        let query = supabase.from('properties')
+          .select('*')
+          .eq('status', 'active')
+          .in('approval_status', ['approved', 'published'])
+          .order('created_at', { ascending: false });
 
         if (filters.city) {
           query = query.eq('city', filters.city);
@@ -1661,8 +1665,11 @@ export const dbService = {
           if (!a.is_featured && b.is_featured) return 1;
           return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
         });
-      } catch {
-        // Fall back cleanly to local storage engine
+      } catch (err: any) {
+        console.error('[DB Error] getProperties query failed:', err?.message || err);
+        if (isRealSupabaseConfigured) {
+          throw new Error(`Database Error loading active properties: ${err?.message || 'Query failed'}`);
+        }
       }
     }
 
@@ -1836,53 +1843,167 @@ export const dbService = {
     }
   },
 
-  async postProperty(property: Omit<Property, 'id' | 'created_at' | 'is_verified' | 'status'>): Promise<Property> {
+  async uploadPropertyImages(files: File[], propertyId: string): Promise<string[]> {
+    if (!files || files.length === 0) return [];
+    if (files.length > 8) throw new Error('Validation Error: Maximum 8 images allowed.');
+
+    const currentUser = await this.getCurrentUser();
+    if (!currentUser) throw new Error('Authentication required to upload property images.');
+
+    const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/webp'];
+    const maxSizeBytes = 5 * 1024 * 1024; // 5 MB
+
+    for (const file of files) {
+      if (!allowedMimeTypes.includes(file.type)) {
+        throw new Error(`Validation Error: File '${file.name}' has invalid file type '${file.type}'. Allowed types: JPG, PNG, WebP.`);
+      }
+      if (file.size > maxSizeBytes) {
+        throw new Error(`Validation Error: File '${file.name}' exceeds the 5 MB size limit.`);
+      }
+    }
+
+    const uploadedPaths: string[] = [];
+
+    if (isRealSupabaseConfigured && supabase) {
+      try {
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i];
+          const fileExt = file.name.split('.').pop()?.toLowerCase() || 'webp';
+          const sanitizedOriginal = file.name.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 20);
+          const uniqueId = `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+          const objectPath = `${currentUser.id}/${propertyId}/${uniqueId}_${sanitizedOriginal}.${fileExt}`;
+
+          const { data, error } = await supabase.storage
+            .from('property-images')
+            .upload(objectPath, file, {
+              contentType: file.type,
+              upsert: true
+            });
+
+          if (error || !data) {
+            console.error('[Storage Upload Error]', error);
+            // Rollback uploaded images in this batch
+            if (uploadedPaths.length > 0) {
+              await supabase.storage.from('property-images').remove(uploadedPaths);
+            }
+            throw new Error(`Storage Error: Failed to upload image '${file.name}': ${error?.message || 'Upload failed'}`);
+          }
+
+          uploadedPaths.push(data.path);
+        }
+
+        return uploadedPaths.map(p => `property-images/${p}`);
+      } catch (err: any) {
+        // Atomic Rollback
+        if (uploadedPaths.length > 0 && supabase) {
+          try {
+            await supabase.storage.from('property-images').remove(uploadedPaths);
+          } catch {
+            // Ignore secondary cleanup error
+          }
+        }
+        throw err;
+      }
+    } else {
+      return files.map((f, i) => `property-images/${currentUser.id}/${propertyId}/demo-${i + 1}.webp`);
+    }
+  },
+
+  async postProperty(property: Omit<Property, 'id' | 'created_at' | 'is_verified' | 'status'> & { imageFiles?: File[] }): Promise<Property> {
     const currentUser = await this.getCurrentUser();
     if (!currentUser) throw new Error('Authentication required: You must be logged in to post a property.');
     if (currentUser.role === 'renter') {
       throw new Error('Unauthorized: Renters are not allowed to post properties.');
     }
 
-    // Check if landlord_broker has exceeded listing limit of 3 for free tier
-    if (currentUser.role === 'landlord_broker' && !currentUser.is_subscribed) {
-      const existingProps = await this.getOwnerProperties(currentUser.id);
-      const activeCount = existingProps.filter(p => p.status === 'active').length;
-      if (activeCount >= 3) {
-        throw new Error('Listing limit reached: Free accounts are capped at 3 active listings. Subscribe to the Broker Plan to unlock unlimited listings!');
-      }
+    // REMOVED 3-listing cap restriction for all users
+
+    let finalImageUrls = [...(property.image_urls || [])];
+    // Strip temporary browser blob URLs
+    finalImageUrls = finalImageUrls.filter(url => !url.startsWith('blob:'));
+
+    const propertyId = 'prop_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+
+    // Upload physical File objects if provided
+    if (property.imageFiles && property.imageFiles.length > 0) {
+      const uploadedStoragePaths = await this.uploadPropertyImages(property.imageFiles, propertyId);
+      finalImageUrls = [...finalImageUrls, ...uploadedStoragePaths];
     }
 
-    const newProp: Property = {
-      ...property,
-      owner_id: currentUser.id, // Always bind property to the authenticated creator's ID
-      id: isRealSupabaseConfigured ? undefined : 'prop-gen-' + Math.random().toString(36).substr(2, 9),
-      is_verified: false,
-      approval_status: 'pending_review',
-      status: 'pending',
-      review_notes: null,
-      created_at: new Date().toISOString()
-    } as unknown as Property;
-
     if (isRealSupabaseConfigured && supabase) {
-      const { data, error } = await supabase
-        .from('properties')
-        .insert(newProp)
-        .select()
-        .single();
-      if (error) throw error;
-      return data as Property;
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+
+      if (!token) {
+        throw new Error('Authentication Error: Session token missing. Please sign in again.');
+      }
+
+      const response = await fetch('/api/properties', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          title: property.title,
+          description: property.description,
+          city: property.city,
+          locality: property.locality,
+          address: property.address,
+          bedrooms: property.bedrooms,
+          bathrooms: property.bathrooms,
+          furnishing_status: property.furnishing_status,
+          rent_amount: property.rent_amount,
+          deposit_amount: property.deposit_amount,
+          latitude: property.latitude,
+          longitude: property.longitude,
+          image_urls: finalImageUrls
+        })
+      });
+
+      const responseText = await response.text();
+      let resData: any = {};
+      try {
+        resData = responseText ? JSON.parse(responseText) : {};
+      } catch {
+        resData = { error: 'Server returned an invalid response.' };
+      }
+
+      if (!response.ok) {
+        // Rollback uploaded storage files if endpoint returns failure
+        if (finalImageUrls.length > 0) {
+          const storagePathsToDelete = finalImageUrls
+            .filter(u => u.startsWith('property-images/'))
+            .map(u => u.replace('property-images/', ''));
+
+          if (storagePathsToDelete.length > 0) {
+            try {
+              await supabase.storage.from('property-images').remove(storagePathsToDelete);
+            } catch {
+              // Ignore rollback cleanup error
+            }
+          }
+        }
+        throw new Error(resData.error || `Submission failed with status ${response.status}`);
+      }
+
+      return resData.property as Property;
     } else {
+      const newProp: Property = {
+        ...property,
+        id: propertyId,
+        owner_id: currentUser.id,
+        is_verified: false,
+        approval_status: 'pending_review',
+        status: 'pending',
+        review_notes: null,
+        created_at: new Date().toISOString(),
+        image_urls: finalImageUrls
+      } as unknown as Property;
+
       const props = getMockData<Property>('myangan_properties');
       props.push(newProp);
       saveMockData('myangan_properties', props);
-
-      // Increment active_listings_count for the broker
-      const brokers = getMockData<Broker>('myangan_brokers');
-      const bIndex = brokers.findIndex(b => b.user_id === currentUser.id);
-      if (bIndex !== -1) {
-        brokers[bIndex].active_listings_count += 1;
-        saveMockData('myangan_brokers', brokers);
-      }
 
       return newProp;
     }

@@ -10,6 +10,7 @@ import { migrationRouter } from "./server/migration";
 import { paymentRouter } from "./server/payments";
 import { operationsRouter } from "./server/operations";
 import { aiRouter } from "./server/ai";
+import { propertyRouter } from "./server/properties";
 import { validateEnv } from "./server/env";
 
 export const app = express();
@@ -31,11 +32,12 @@ app.use(express.json({
 
 // API Routes
 app.use("/api/auth", authRouter);
-app.use("/api", authRouter);
+app.use("/api/properties", propertyRouter);
 app.use("/api/admin", migrationRouter);
 app.use("/api/payments", paymentRouter);
 app.use("/api/operations", operationsRouter);
 app.use("/api/ai", aiRouter);
+app.use("/api", authRouter);
 
 // Health Check Endpoint
 app.get("/api/health", (req, res) => {

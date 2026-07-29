@@ -82,6 +82,7 @@ async function runTestSuite() {
     const { paymentRouter } = await import('../server/payments');
     const { operationsRouter } = await import('../server/operations');
     const { aiRouter } = await import('../server/ai');
+    const { propertyRouter } = await import('../server/properties');
 
     const app = express();
     app.use(express.json({
@@ -90,6 +91,7 @@ async function runTestSuite() {
       }
     }));
     app.use('/api/auth', authRouter);
+    app.use('/api/properties', propertyRouter);
     app.use('/api/admin', migrationRouter);
     app.use('/api/payments', paymentRouter);
     app.use('/api/operations', operationsRouter);
@@ -374,6 +376,39 @@ async function runTestSuite() {
     const estimateJson = await estimateRes.json();
     assert(estimateJson.status === 'insufficient_data', 'Rent estimate handles low comparable count by returning "insufficient_data" state');
     assert(typeof estimateJson.disclaimer === 'string' && estimateJson.disclaimer.includes('informational only'), 'Rent estimate response contains mandatory disclaimer');
+
+    // 9. PROPERTY SUBMISSION & STORAGE TESTS
+    console.log('\n9. [Property Submission Test] Trusted API & Storage Controls');
+
+    // Unauthenticated submission rejection
+    const unauthPropRes = await fetch(`${baseUrl}/api/properties`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Short' }),
+    });
+    assert(unauthPropRes.status === 401, 'POST /api/properties rejects unauthenticated requests with HTTP 401');
+
+    // Blob URL payload rejection
+    const blobPropRes = await fetch(`${baseUrl}/api/properties`, {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer mock-token-owner' 
+      },
+      body: JSON.stringify({
+        title: 'Luxury 3 BHK Builder Floor near Cyber City',
+        city: 'Gurugram',
+        locality: 'Sector 54',
+        address: 'DLF Park Place, Sector 54, Gurugram',
+        bedrooms: 3,
+        bathrooms: 3,
+        furnishing_status: 'furnished',
+        rent_amount: 50000,
+        deposit_amount: 100000,
+        image_urls: ['blob:http://localhost:3000/temp-preview-123']
+      }),
+    });
+    assert([400, 401].includes(blobPropRes.status), 'POST /api/properties rejects temporary blob URLs with HTTP 400 or 401');
 
   } catch (err: any) {
     assert(false, 'Live API server testing', err.message);

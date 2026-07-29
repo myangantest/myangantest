@@ -96,7 +96,8 @@ export default function DashboardView({ navigateTo, currentUser, onOpenMaintenan
       navigateTo('auth');
       return;
     }
-    if (currentUser.role !== 'landlord_broker' && currentUser.role !== 'admin') {
+    const allowedRoles = ['owner', 'broker', 'landlord', 'admin', 'landlord_broker'];
+    if (!allowedRoles.includes(currentUser.role) || currentUser.role === 'renter') {
       navigateTo('properties');
       return;
     }
