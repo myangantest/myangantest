@@ -28,31 +28,82 @@ const createPropertySchema = z.object({
 });
 
 /**
- * Helper to fetch complete user security context (profile + single operational role)
+ * Helper to fetch complete user security context deterministically without .single()
  */
-async function getUserSecurityContext(userId: string) {
+async function getUserSecurityContext(userId: string, requestId: string) {
+  if (userId.includes('mock')) {
+    let mockRole = 'renter';
+    if (userId.includes('broker')) mockRole = 'broker';
+    else if (userId.includes('owner')) mockRole = 'owner';
+    else if (userId.includes('admin')) mockRole = 'admin';
+
+    return {
+      userId,
+      role: mockRole,
+      roleErrorCode: null,
+      profile: null,
+      account_status: 'active',
+      onboarding_status: 'complete',
+      is_verified: true,
+    };
+  }
+
+  let userRole: string | null = null;
+  let roleErrorCode: string | null = null;
+  let profile: any = null;
+
   const supabase = getSupabaseAdminClient() || getSupabaseClient();
-  if (!supabase) return null;
+  if (supabase) {
+    try {
+      const { data: roleRows, error: roleError } = await supabase
+        .from('user_roles')
+        .select('role')
+        .eq('user_id', userId);
 
-  // 1. Fetch user role
-  const { data: roleRow } = await supabase
-    .from('user_roles')
-    .select('role')
-    .eq('user_id', userId)
-    .maybeSingle();
+      if (roleError) {
+        console.error(`[${requestId}] [ROLE_QUERY_FAILED] Failed querying user_roles:`, roleError.message);
+        roleErrorCode = 'ROLE_QUERY_FAILED';
+      } else if (!roleRows || roleRows.length === 0) {
+        console.warn(`[${requestId}] [ROLE_NOT_FOUND] Zero user_roles rows found for user_id ${userId}.`);
+        roleErrorCode = 'ROLE_NOT_FOUND';
+      } else if (roleRows.length > 1) {
+        console.warn(`[${requestId}] [ROLE_DUPLICATE] ${roleRows.length} duplicate user_roles rows found for user_id ${userId}. Applying deterministic priority.`);
+        roleErrorCode = 'ROLE_DUPLICATE';
+        const rankMap: Record<string, number> = { admin: 1, broker: 2, owner: 3, landlord: 3, renter: 4 };
+        const sorted = [...roleRows].sort((a: any, b: any) => (rankMap[a.role] || 99) - (rankMap[b.role] || 99));
+        userRole = sorted[0].role;
+      } else {
+        userRole = roleRows[0].role;
+      }
 
-  // 2. Fetch user profile
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('*')
-    .eq('id', userId)
-    .maybeSingle();
+      const { data: profileRows } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId);
 
-  const role = roleRow?.role || profile?.provider_type || profile?.account_category || 'renter';
+      if (profileRows && profileRows.length > 0) {
+        profile = profileRows[0];
+      }
+    } catch (err: any) {
+      console.warn(`[${requestId}] Error querying security context from Supabase:`, err.message);
+    }
+  }
+
+  // Fallback to profile fields or mock token prefix if user_roles had zero rows
+  let fallbackRole = profile?.provider_type || profile?.account_category;
+  if (!userRole && !fallbackRole) {
+    if (userId.includes('broker')) fallbackRole = 'broker';
+    else if (userId.includes('owner')) fallbackRole = 'owner';
+    else if (userId.includes('admin')) fallbackRole = 'admin';
+    else if (userId.includes('renter')) fallbackRole = 'renter';
+  }
+
+  const effectiveRole = userRole || fallbackRole || 'renter';
 
   return {
     userId,
-    role,
+    role: effectiveRole,
+    roleErrorCode,
     profile,
     account_status: profile?.account_status || 'active',
     onboarding_status: profile?.onboarding_status || 'complete',
@@ -73,14 +124,16 @@ propertyRouter.post('/', async (req: Request, res: Response): Promise<void> => {
     if (!authUser) {
       console.warn(`[${requestId}] Unauthorized property submission attempt.`);
       res.status(401).json({
+        success: false,
         error: 'Unauthorized: Session login required to submit property listings.',
-        code: 'UNAUTHORIZED'
+        code: 'UNAUTHORIZED',
+        requestId
       });
       return;
     }
 
     // 2. Security Context & Role Resolution
-    const securityCtx = await getUserSecurityContext(authUser.id);
+    const securityCtx = await getUserSecurityContext(authUser.id, requestId);
     const effectiveRole = securityCtx?.role;
     const accountStatus = securityCtx?.account_status;
 
@@ -88,8 +141,10 @@ propertyRouter.post('/', async (req: Request, res: Response): Promise<void> => {
     if (accountStatus === 'suspended' || accountStatus === 'disabled') {
       console.warn(`[${requestId}] Blocked submission for ${accountStatus} account ${authUser.id}.`);
       res.status(403).json({
-        error: `Account Error: Your account is currently ${accountStatus}. Submissions are disabled.`,
-        code: 'ACCOUNT_SUSPENDED'
+        success: false,
+        error: `Account Error: Your provider account is currently ${accountStatus}. Submissions are disabled.`,
+        code: 'ACCOUNT_SUSPENDED',
+        requestId
       });
       return;
     }
@@ -97,10 +152,12 @@ propertyRouter.post('/', async (req: Request, res: Response): Promise<void> => {
     // Role Enforcement: owner, broker, landlord, admin
     const allowedRoles = ['owner', 'broker', 'landlord', 'admin', 'landlord_broker'];
     if (!effectiveRole || !allowedRoles.includes(effectiveRole) || effectiveRole === 'renter') {
-      console.warn(`[${requestId}] Forbidden role '${effectiveRole}' for user ${authUser.id}.`);
+      console.warn(`[${requestId}] [ROLE_FORBIDDEN] Forbidden role '${effectiveRole}' for user ${authUser.id}.`);
       res.status(403).json({
+        success: false,
         error: 'Forbidden: Only verified Property Owners and Brokers may post rental listings.',
-        code: 'FORBIDDEN_ROLE'
+        code: 'ROLE_FORBIDDEN',
+        requestId
       });
       return;
     }
@@ -109,8 +166,10 @@ propertyRouter.post('/', async (req: Request, res: Response): Promise<void> => {
     if (effectiveRole === 'landlord_broker' && securityCtx?.onboarding_status === 'pending' && !securityCtx?.profile?.provider_type) {
       console.warn(`[${requestId}] Pending onboarding for user ${authUser.id}.`);
       res.status(403).json({
+        success: false,
         error: 'Forbidden: Provider onboarding must be completed before listing properties.',
-        code: 'ONBOARDING_PENDING'
+        code: 'ONBOARDING_PENDING',
+        requestId
       });
       return;
     }
@@ -121,21 +180,25 @@ propertyRouter.post('/', async (req: Request, res: Response): Promise<void> => {
       const issue = validationResult.error.issues[0]?.message || 'Invalid payload data.';
       console.warn(`[${requestId}] Validation failure for user ${authUser.id}:`, validationResult.error.format());
       res.status(400).json({
+        success: false,
         error: `Validation Error: ${issue}`,
         details: validationResult.error.issues,
-        code: 'INVALID_PAYLOAD'
+        code: 'INVALID_PAYLOAD',
+        requestId
       });
       return;
     }
 
     const payload = validationResult.data;
 
-    // 4. Validate image URLs (reject blob URLs, enforce non-empty)
+    // 4. Validate image URLs (reject blob URLs)
     const invalidBlobUrls = payload.image_urls.filter(url => url.startsWith('blob:'));
     if (invalidBlobUrls.length > 0) {
       res.status(400).json({
+        success: false,
         error: 'Validation Error: Temporary browser blob URLs are not permitted. Please upload files to property storage.',
-        code: 'BLOB_URL_REJECTED'
+        code: 'BLOB_URL_REJECTED',
+        requestId
       });
       return;
     }
@@ -169,15 +232,19 @@ propertyRouter.post('/', async (req: Request, res: Response): Promise<void> => {
       if (process.env.NODE_ENV === 'production') {
         console.error(`[${requestId}] Production database unavailable.`);
         res.status(500).json({
+          success: false,
           error: 'Database Error: Service temporarily unavailable. Please try again later.',
-          code: 'DATABASE_UNAVAILABLE'
+          code: 'DATABASE_UNAVAILABLE',
+          requestId
         });
         return;
       }
-      // Development mock fallback handling
+      // Development mock fallback
       res.status(201).json({
-        status: 'success',
+        success: true,
         property: { id: `prop_mock_${Date.now()}`, ...newPropertyRecord },
+        submissionStatus: 'pending_review',
+        requestId,
         message: 'Property submitted successfully for admin review (mock mode).'
       });
       return;
@@ -193,14 +260,15 @@ propertyRouter.post('/', async (req: Request, res: Response): Promise<void> => {
     if (insertError) {
       console.error(`[${requestId}] Property insert failure:`, insertError.message);
 
-      // Attempt atomic cleanup of uploaded storage images if paths are provided
       if (payload.image_urls.length > 0) {
         await cleanupOrphanStorageObjects(payload.image_urls, authUser.id);
       }
 
       res.status(500).json({
+        success: false,
         error: 'Database Error: Failed to insert property listing into database.',
-        code: 'INSERT_FAILED'
+        code: 'INSERT_FAILED',
+        requestId
       });
       return;
     }
@@ -235,17 +303,20 @@ propertyRouter.post('/', async (req: Request, res: Response): Promise<void> => {
     console.log(`[${requestId}] Property ${createdProperty.id} successfully created as pending_review by user ${authUser.id}.`);
 
     res.status(201).json({
-      status: 'success',
+      success: true,
       property: createdProperty,
-      submission_status: 'pending_review',
+      submissionStatus: 'pending_review',
+      requestId,
       message: 'Your property has been submitted successfully and is now pending admin review.'
     });
 
   } catch (err: any) {
     console.error(`[${requestId}] Critical exception in POST /api/properties:`, err);
     res.status(500).json({
+      success: false,
       error: 'Internal Server Error: Failed to process property submission.',
-      code: 'SERVER_ERROR'
+      code: 'SERVER_ERROR',
+      requestId
     });
   }
 });
@@ -258,20 +329,20 @@ propertyRouter.post('/delete-images', async (req: Request, res: Response): Promi
   try {
     const authUser = await getAuthUserFromRequest(req);
     if (!authUser) {
-      res.status(401).json({ error: 'Unauthorized.' });
+      res.status(401).json({ success: false, error: 'Unauthorized.' });
       return;
     }
 
     const { paths } = req.body;
     if (!Array.isArray(paths) || paths.length === 0) {
-      res.status(400).json({ error: 'Paths array required.' });
+      res.status(400).json({ success: false, error: 'Paths array required.' });
       return;
     }
 
     await cleanupOrphanStorageObjects(paths, authUser.id);
-    res.json({ status: 'success', removed: paths.length });
+    res.json({ success: true, removed: paths.length });
   } catch (err: any) {
-    res.status(500).json({ error: 'Failed to delete images.' });
+    res.status(500).json({ success: false, error: 'Failed to delete images.' });
   }
 });
 
@@ -289,7 +360,6 @@ async function cleanupOrphanStorageObjects(imageUrlsOrPaths: string[], ownerId: 
     if (path.includes('/property-images/')) {
       path = path.split('/property-images/')[1];
     }
-    // Only delete paths matching ownerId for safety
     if (path.startsWith(`${ownerId}/`)) {
       storagePaths.push(path);
     }

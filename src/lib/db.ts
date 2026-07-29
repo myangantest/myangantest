@@ -1255,16 +1255,18 @@ export const dbService = {
 
       let profileData = (data || null) as UserProfile | null;
 
-      // Always query user_roles table to resolve exact operational role from backend
+      // Query user_roles table without .single() to eliminate PostgREST 406 errors
       try {
-        const { data: roleRow } = await supabase
+        const { data: roleRows } = await supabase
           .from('user_roles')
           .select('role')
-          .eq('user_id', user.id)
-          .single();
+          .eq('user_id', user.id);
 
-        if (roleRow?.role) {
-          const fetchedRole = roleRow.role as UserRole;
+        if (roleRows && roleRows.length > 0) {
+          const rankMap: Record<string, number> = { admin: 1, broker: 2, owner: 3, landlord: 3, renter: 4 };
+          const sorted = [...roleRows].sort((a: any, b: any) => (rankMap[a.role] || 99) - (rankMap[b.role] || 99));
+          const fetchedRole = sorted[0].role as UserRole;
+
           if (profileData) {
             profileData = { ...profileData, role: fetchedRole };
           } else {
@@ -1278,7 +1280,9 @@ export const dbService = {
             };
           }
         }
-      } catch {}
+      } catch (rErr) {
+        console.warn('[user_roles Query Notice]', rErr);
+      }
 
       if (!profileData) {
         profileData = {
@@ -1984,7 +1988,9 @@ export const dbService = {
             }
           }
         }
-        throw new Error(resData.error || `Submission failed with status ${response.status}`);
+        const reqRef = resData.requestId ? ` (Reference: ${resData.requestId})` : '';
+        const errorMessage = (resData.error || `Submission failed with status ${response.status}`) + reqRef;
+        throw new Error(errorMessage);
       }
 
       return resData.property as Property;

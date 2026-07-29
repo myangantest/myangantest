@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import { authRouter } from "../server/auth.js";
+import { propertyRouter } from "../server/properties.js";
 import { migrationRouter } from "../server/migration.js";
 import { paymentRouter } from "../server/payments.js";
 import { operationsRouter } from "../server/operations.js";
@@ -28,11 +29,12 @@ app.use(express.json({
 
 // API Router Mounts
 app.use("/api/auth", authRouter);
-app.use("/api", authRouter);
+app.use("/api/properties", propertyRouter);
 app.use("/api/admin", migrationRouter);
 app.use("/api/payments", paymentRouter);
 app.use("/api/operations", operationsRouter);
 app.use("/api/ai", aiRouter);
+app.use("/api", authRouter);
 
 // Health Check Endpoint
 app.get("/api/health", (req, res) => {

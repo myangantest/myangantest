@@ -380,6 +380,14 @@ async function runTestSuite() {
     // 9. PROPERTY SUBMISSION & STORAGE TESTS
     console.log('\n9. [Property Submission Test] Trusted API & Storage Controls');
 
+    // Route existence check
+    const routeExistRes = await fetch(`${baseUrl}/api/properties`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    assert(routeExistRes.status !== 404, 'POST /api/properties endpoint route exists and does not return HTTP 404');
+
     // Unauthenticated submission rejection
     const unauthPropRes = await fetch(`${baseUrl}/api/properties`, {
       method: 'POST',

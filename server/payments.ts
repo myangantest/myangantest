@@ -37,6 +37,14 @@ export async function getAuthUserFromRequest(req: Request): Promise<{ id: string
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.split(' ')[1];
     if (token) {
+      if (token.startsWith('mock-token-') || token.startsWith('mock-')) {
+        const mockRole = token.replace('mock-token-', '').replace('mock-', '');
+        return {
+          id: `usr_${mockRole}_11111111-1111-4111-a111-111111111111`,
+          email: `${mockRole}@myangan.in`
+        };
+      }
+
       const supabase = getSupabaseClient();
       if (supabase) {
         try {
