@@ -193,8 +193,9 @@ export const dbServiceServer = {
     is_verified?: boolean;
     is_subscribed?: boolean;
   }) {
+    const isAdmin = profile.role === 'admin';
     const isLandlordBroker = profile.role === 'landlord_broker';
-    const accountCategory = isLandlordBroker ? 'landlord_broker' : 'renter';
+    const accountCategory = isAdmin ? 'admin' : (isLandlordBroker ? 'landlord_broker' : 'renter');
     const onboardingStatus = isLandlordBroker ? 'pending' : 'complete';
 
     const supabase = getSupabaseClient();
@@ -217,19 +218,20 @@ export const dbServiceServer = {
         .select()
         .single();
       if (!error && data) {
-        if (!isLandlordBroker) {
+        if (isAdmin) {
           await supabase
             .from('user_roles')
-            .upsert({
-              user_id: profile.id,
-              role: 'renter'
-            }, { onConflict: 'user_id' });
+            .upsert({ user_id: profile.id, role: 'admin' }, { onConflict: 'user_id' });
+        } else if (!isLandlordBroker) {
+          await supabase
+            .from('user_roles')
+            .upsert({ user_id: profile.id, role: 'renter' }, { onConflict: 'user_id' });
         }
 
         return {
           ...data,
           name: data.full_name,
-          role: isLandlordBroker ? 'landlord_broker' : 'renter',
+          role: isAdmin ? 'admin' : (isLandlordBroker ? 'landlord_broker' : 'renter'),
           account_category: accountCategory,
           onboarding_status: onboardingStatus
         };
@@ -243,7 +245,7 @@ export const dbServiceServer = {
     const existingIdx = memoryStore.users.findIndex(u => u.id === profile.id);
     const newProfile = {
       ...profile,
-      role: isLandlordBroker ? 'landlord_broker' : 'renter',
+      role: isAdmin ? 'admin' : (isLandlordBroker ? 'landlord_broker' : 'renter'),
       email: profile.email.trim().toLowerCase(),
       account_category: accountCategory,
       onboarding_status: onboardingStatus,

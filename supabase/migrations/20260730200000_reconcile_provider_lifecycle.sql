@@ -122,7 +122,8 @@ WHERE public.user_roles.role NOT IN ('admin'::public.app_role);
 
 -- Case 4: Explicit preservation for active owner account (aryanv408@gmail.com)
 INSERT INTO public.user_roles (user_id, role, created_at)
-VALUES ('c2567a6a-7e53-4aea-9957-1eae3810919a'::uuid, 'owner'::public.app_role, NOW())
+SELECT 'c2567a6a-7e53-4aea-9957-1eae3810919a'::uuid, 'owner'::public.app_role, NOW()
+WHERE EXISTS (SELECT 1 FROM public.profiles WHERE id = 'c2567a6a-7e53-4aea-9957-1eae3810919a'::uuid)
 ON CONFLICT (user_id) DO UPDATE
 SET role = 'owner'::public.app_role;
 

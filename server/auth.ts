@@ -337,11 +337,17 @@ authRouter.post('/onboarding', async (req: Request, res: Response): Promise<void
     }
 
     if (user.onboarding_status === 'complete' && user.provider_type) {
-      // Return success if already completed with matching provider type
       if (user.provider_type === provider_type) {
         res.status(200).json({ message: 'Onboarding is already completed.', user });
         return;
       }
+      res.status(403).json({ error: 'Forbidden: Provider onboarding is already completed and provider type cannot be modified.' });
+      return;
+    }
+
+    if (user.onboarding_status !== 'pending') {
+      res.status(403).json({ error: 'Forbidden: Only accounts with pending onboarding status may complete provider onboarding.' });
+      return;
     }
 
     const updatedUser = await dbServiceServer.completeLandlordBrokerOnboarding(authUser.id, provider_type as 'owner' | 'broker');

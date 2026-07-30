@@ -1339,6 +1339,9 @@ export const dbService = {
     if (!password || password.length < 6) {
       throw new Error('Password must be at least 6 characters long.');
     }
+    const allowedPublicRoles = ['renter', 'landlord_broker'];
+    const sanitizedRole = allowedPublicRoles.includes(role) ? role : 'renter';
+
     if (isRealSupabaseConfigured && supabase) {
       // In real mode, use Supabase SignUp
       const { data, error } = await supabase.auth.signUp({
@@ -1347,7 +1350,7 @@ export const dbService = {
         options: {
           data: {
             name,
-            role,
+            role: sanitizedRole,
             phone
           }
         }
