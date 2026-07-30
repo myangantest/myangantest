@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { Request, Response, Router } from 'express';
 import { dbServiceServer, getSupabaseClient, getSupabaseAdminClient, getSupabaseAuthClient, isServerMockActive } from './db.js';
 import { sendEmail, sendPasswordResetOtpEmail, sendPasswordChangedEmail } from './email.js';
+import { getAuthUserFromRequest } from './payments.js';
 
 export const authRouter = Router();
 
@@ -310,14 +311,13 @@ authRouter.post('/verify-otp', async (req: Request, res: Response): Promise<void
  * Post-verification onboarding for landlord_broker users to select owner or broker
  */
 authRouter.post('/onboarding', async (req: Request, res: Response): Promise<void> => {
-  const { userId, provider_type } = req.body;
-  const headerUserId = (req.headers['x-user-id'] as string) || userId;
-
-  if (!headerUserId) {
-    res.status(401).json({ error: 'Authentication required to complete onboarding.' });
+  const authUser = await getAuthUserFromRequest(req);
+  if (!authUser) {
+    res.status(401).json({ error: 'Authentication required: Valid session access token required to complete provider onboarding.' });
     return;
   }
 
+  const { provider_type } = req.body;
   const allowedProviderTypes = ['owner', 'broker'];
   if (!provider_type || !allowedProviderTypes.includes(provider_type)) {
     res.status(400).json({ error: 'Invalid provider type. Allowed values are owner or broker.' });
@@ -325,18 +325,26 @@ authRouter.post('/onboarding', async (req: Request, res: Response): Promise<void
   }
 
   try {
-    const user = await dbServiceServer.getUserById(headerUserId);
+    const user = await dbServiceServer.getUserById(authUser.id);
     if (!user) {
-      res.status(404).json({ error: 'User account not found.' });
+      res.status(404).json({ error: 'User account profile not found.' });
       return;
     }
 
-    if (user.account_category === 'renter') {
-      res.status(403).json({ error: 'Renters cannot complete landlord/broker onboarding.' });
+    if (user.account_category !== 'landlord_broker') {
+      res.status(403).json({ error: 'Forbidden: Only accounts with landlord_broker category may complete provider onboarding.' });
       return;
     }
 
-    const updatedUser = await dbServiceServer.completeLandlordBrokerOnboarding(headerUserId, provider_type as 'owner' | 'broker');
+    if (user.onboarding_status === 'complete' && user.provider_type) {
+      // Return success if already completed with matching provider type
+      if (user.provider_type === provider_type) {
+        res.status(200).json({ message: 'Onboarding is already completed.', user });
+        return;
+      }
+    }
+
+    const updatedUser = await dbServiceServer.completeLandlordBrokerOnboarding(authUser.id, provider_type as 'owner' | 'broker');
 
     res.status(200).json({
       message: 'Onboarding completed successfully.',

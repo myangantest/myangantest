@@ -1388,7 +1388,7 @@ export const dbService = {
         await supabase.from('user_roles').upsert({
           user_id: data.user.id,
           role: 'renter'
-        }, { onConflict: 'user_id,role' });
+        }, { onConflict: 'user_id' });
       }
 
       return profile;
@@ -1449,6 +1449,32 @@ export const dbService = {
     if (!user) throw new Error('Authentication required.');
 
     if (isRealSupabaseConfigured && supabase) {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+
+      if (token) {
+        try {
+          const res = await fetch('/api/auth/onboarding', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ provider_type: providerType })
+          });
+          if (res.ok) {
+            const json = await res.json();
+            return {
+              ...user,
+              ...json.user,
+              role: providerType,
+              provider_type: providerType,
+              onboarding_status: 'complete'
+            };
+          }
+        } catch {}
+      }
+
       const { data, error } = await supabase
         .from('profiles')
         .update({
@@ -1470,21 +1496,6 @@ export const dbService = {
         };
       }
     }
-
-    try {
-      const res = await fetch('/api/auth/onboarding', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-user-id': user.id
-        },
-        body: JSON.stringify({ provider_type: providerType })
-      });
-      if (res.ok) {
-        const json = await res.json();
-        return json.user;
-      }
-    } catch {}
 
     const updated = {
       ...user,

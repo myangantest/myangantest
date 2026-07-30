@@ -223,7 +223,7 @@ export const dbServiceServer = {
             .upsert({
               user_id: profile.id,
               role: 'renter'
-            }, { onConflict: 'user_id,role' });
+            }, { onConflict: 'user_id' });
         }
 
         return {
@@ -243,6 +243,7 @@ export const dbServiceServer = {
     const existingIdx = memoryStore.users.findIndex(u => u.id === profile.id);
     const newProfile = {
       ...profile,
+      role: isLandlordBroker ? 'landlord_broker' : 'renter',
       email: profile.email.trim().toLowerCase(),
       account_category: accountCategory,
       onboarding_status: onboardingStatus,

@@ -96,6 +96,10 @@ export default function DashboardView({ navigateTo, currentUser, onOpenMaintenan
       navigateTo('auth');
       return;
     }
+    if (currentUser.account_category === 'landlord_broker' && currentUser.onboarding_status === 'pending') {
+      navigateTo('onboarding');
+      return;
+    }
     const allowedRoles = ['owner', 'broker', 'landlord', 'admin', 'landlord_broker'];
     if (!allowedRoles.includes(currentUser.role) || currentUser.role === 'renter') {
       navigateTo('properties');
