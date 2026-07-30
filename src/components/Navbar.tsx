@@ -26,11 +26,27 @@ export default function Navbar({
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
 
-  const getRoleLabel = (role?: UserRole) => {
-    if (role === 'admin') return 'Admin';
-    if (role === 'landlord_broker') return 'Landlord/Broker';
-    return 'Renter';
+  const getRoleLabel = (role?: UserRole): string => {
+    switch (role) {
+      case 'admin':
+        return 'Admin';
+      case 'owner':
+        return 'Owner';
+      case 'broker':
+        return 'Broker';
+      case 'landlord_broker':
+        return 'Landlord/Broker';
+      case 'renter':
+      default:
+        return 'Renter';
+    }
   };
+
+  const isCompletedProvider = Boolean(
+    currentUser &&
+    currentUser.onboarding_status === 'complete' &&
+    (currentUser.role === 'owner' || currentUser.role === 'broker' || currentUser.provider_type === 'owner' || currentUser.provider_type === 'broker')
+  );
 
   const navLinks = [
     { label: 'Properties', route: 'properties', icon: Home },
@@ -117,7 +133,7 @@ export default function Navbar({
               </button>
             )}
 
-            {currentUser && currentUser.role === 'landlord_broker' && (
+            {isCompletedProvider && (
               <button
                 onClick={() => navigateTo('dashboard')}
                 className={`flex items-center gap-1.5 px-3 py-2 rounded-md text-sm font-medium transition-colors cursor-pointer ${
@@ -184,7 +200,7 @@ export default function Navbar({
                       </p>
                     </div>
 
-                    {currentUser.role === 'landlord_broker' && (
+                    {isCompletedProvider && (
                       <button
                         onClick={() => { navigateTo('post-property'); setUserDropdownOpen(false); }}
                         className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 cursor-pointer"
@@ -211,26 +227,26 @@ export default function Navbar({
                 Sign In
               </button>
             )}
-          </div>
 
-          {/* Mobile menu button */}
-          <div className="flex items-center gap-3 md:hidden">
-            <button
-              onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="p-2 text-slate-500 hover:text-slate-800 focus:outline-none cursor-pointer"
-            >
-              {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
-            </button>
+            {/* Mobile menu button */}
+            <div className="md:hidden flex items-center">
+              <button
+                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                className="p-2 rounded-md text-slate-600 hover:text-slate-900 hover:bg-slate-100 cursor-pointer"
+              >
+                {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
+              </button>
+            </div>
           </div>
         </div>
       </div>
 
       {/* Mobile Menu */}
       {mobileMenuOpen && (
-        <div className="md:hidden bg-white border-t border-slate-200 px-4 pt-2 pb-4 space-y-1 shadow-md">
+        <div className="md:hidden px-4 pt-2 pb-4 space-y-1 bg-white border-b border-slate-200">
           {navLinks.map((link) => {
             const Icon = link.icon;
-            const isActive = currentRoute === link.route;
+            const isActive = currentRoute === link.route || (link.route === 'properties' && currentRoute === 'property-detail');
             return (
               <button
                 key={link.route}
@@ -247,6 +263,18 @@ export default function Navbar({
             );
           })}
 
+          <button
+            onClick={() => { navigateTo('lease-agreement'); setMobileMenuOpen(false); }}
+            className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-md text-base font-medium cursor-pointer ${
+              currentRoute === 'lease-agreement'
+                ? 'bg-orange-50 text-orange-600 font-semibold'
+                : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+            }`}
+          >
+            <FileText className="w-5 h-5" />
+            e-Agreement
+          </button>
+
           {currentUser && currentUser.role === 'renter' && (
             <button
               onClick={() => { navigateTo('favorites'); setMobileMenuOpen(false); }}
@@ -261,7 +289,7 @@ export default function Navbar({
             </button>
           )}
 
-          {currentUser && (currentUser.role === 'landlord_broker' || currentUser.role === 'admin') && (
+          {(isCompletedProvider || currentUser?.role === 'admin') && (
             <button
               onClick={() => { navigateTo('dashboard'); setMobileMenuOpen(false); }}
               className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-md text-base font-medium cursor-pointer ${
@@ -298,7 +326,7 @@ export default function Navbar({
                   <p className="text-[10px] text-orange-600 font-mono">{getRoleLabel(currentUser.role)}</p>
                 </div>
 
-                {currentUser.role === 'landlord_broker' && (
+                {isCompletedProvider && (
                   <button
                     onClick={() => { navigateTo('post-property'); setMobileMenuOpen(false); }}
                     className="w-full text-center px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded-lg cursor-pointer"

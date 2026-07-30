@@ -262,10 +262,21 @@ export default function LandingView({ navigateTo, currentUser, compareIds = [], 
           <div className="flex flex-col sm:flex-row gap-4 shrink-0 w-full sm:w-auto">
             <button
               onClick={() => {
-                if (currentUser && currentUser.role === 'landlord_broker') {
-                  navigateTo('post-property');
-                } else {
+                if (!currentUser) {
                   navigateTo('auth', { targetRole: 'landlord_broker' });
+                  return;
+                }
+                const isCompletedProvider = currentUser.onboarding_status === 'complete' &&
+                  (currentUser.role === 'owner' || currentUser.role === 'broker' || currentUser.provider_type === 'owner' || currentUser.provider_type === 'broker' || currentUser.role === 'admin');
+
+                const isPendingProvider = currentUser.account_category === 'landlord_broker' && currentUser.onboarding_status === 'pending';
+
+                if (isCompletedProvider) {
+                  navigateTo('post-property');
+                } else if (isPendingProvider) {
+                  navigateTo('onboarding');
+                } else {
+                  alert('Renters cannot list properties. Please register as a Landlord or Broker.');
                 }
               }}
               className="px-6 py-3 bg-orange-500 hover:bg-orange-600 text-white font-medium text-sm rounded-xl text-center transition-colors shadow-md cursor-pointer"
