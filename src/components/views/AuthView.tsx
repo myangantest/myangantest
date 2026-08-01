@@ -153,7 +153,7 @@ export default function AuthView({ navigateTo, onAuthSuccess, initialRole = 'ren
 
       if (activeUser.account_category === 'landlord_broker' && activeUser.onboarding_status === 'pending') {
         navigateTo('onboarding');
-      } else if (activeUser.role === 'owner' || activeUser.role === 'broker' || activeUser.role === 'landlord_broker') {
+      } else if (activeUser.role === 'owner' || activeUser.role === 'broker') {
         navigateTo('dashboard');
       } else if (activeUser.role === 'admin') {
         navigateTo('admin');
