@@ -38,7 +38,19 @@ const envSchema = z.object({
 export type EnvConfig = z.infer<typeof envSchema>;
 
 export function validateEnv(): EnvConfig {
-  const result = envSchema.safeParse(process.env);
+  // Compute dynamic APP_URL fallback (supporting Vercel preview/production deployments)
+  const computedAppUrl = process.env.APP_URL || (
+    process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` :
+    process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` :
+    (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3000')
+  );
+
+  const envData = {
+    ...process.env,
+    APP_URL: computedAppUrl || process.env.APP_URL
+  };
+
+  const result = envSchema.safeParse(envData);
   
   if (!result.success) {
     console.error('❌ Environment validation failed:', result.error.format());
@@ -47,11 +59,12 @@ export function validateEnv(): EnvConfig {
     }
   }
 
-  // Production Guard: Prevent startup if critical Supabase variables are missing in production mode
+  // Production Guard: Prevent startup if critical variables are missing in production mode
   if (process.env.NODE_ENV === 'production') {
     const missingVars: string[] = [];
     if (!process.env.SUPABASE_URL) missingVars.push('SUPABASE_URL');
     if (!process.env.SUPABASE_SERVICE_ROLE_KEY && !process.env.VITE_SUPABASE_ANON_KEY) missingVars.push('SUPABASE_SERVICE_ROLE_KEY / VITE_SUPABASE_ANON_KEY');
+    if (!computedAppUrl || computedAppUrl.includes('localhost')) missingVars.push('APP_URL (must not default to localhost in production)');
     
     if (missingVars.length > 0) {
       console.error(`❌ PRODUCTION GUARDFALL: Missing critical production variables: ${missingVars.join(', ')}`);

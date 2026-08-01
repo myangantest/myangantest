@@ -48,7 +48,7 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
     return;
   }
 
-  const supabase = getSupabaseClient();
+  const supabase = getSupabaseAdminClient() || getSupabaseClient();
   if (!supabase && !isServerMockActive) {
     res.status(503).json({
       error: 'Database configuration error: Supabase is unconfigured (VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are missing). Registration is disabled in production.'

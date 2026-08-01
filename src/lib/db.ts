@@ -1343,7 +1343,7 @@ export const dbService = {
     const sanitizedRole = allowedPublicRoles.includes(role) ? role : 'renter';
 
     if (isRealSupabaseConfigured && supabase) {
-      // In real mode, use Supabase SignUp
+      // In real mode, register user credentials via Supabase Auth
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
@@ -1358,7 +1358,6 @@ export const dbService = {
       if (error) throw new Error(error.message);
       if (!data.user) throw new Error('Sign up failed');
 
-      // Check if profile is already created via trigger, otherwise do it manually
       const isLandlordBroker = role === 'landlord_broker';
       const accountCategory = isLandlordBroker ? 'landlord_broker' : 'renter';
       const onboardingStatus = isLandlordBroker ? 'pending' : 'complete';
@@ -1373,26 +1372,6 @@ export const dbService = {
         onboarding_status: onboardingStatus,
         created_at: new Date().toISOString()
       };
-      
-      // Upsert profile in public.profiles
-      await supabase.from('profiles').upsert({
-        id: data.user.id,
-        email,
-        full_name: name,
-        phone,
-        account_category: accountCategory,
-        onboarding_status: onboardingStatus,
-        provider_type: null,
-        account_status: 'pending_verification',
-        updated_at: new Date().toISOString()
-      });
-
-      if (!isLandlordBroker) {
-        await supabase.from('user_roles').upsert({
-          user_id: data.user.id,
-          role: 'renter'
-        }, { onConflict: 'user_id' });
-      }
 
       return profile;
     } else if (isMockModeActive) {
@@ -1416,12 +1395,10 @@ export const dbService = {
       users.push(newProfile);
       saveMockData('myangan_users', users);
 
-      // Save the password securely in the passwords dictionary
       const passwords = safeJsonParse<Record<string, string>>(safeLocalStorage.getItem('myangan_user_passwords'), {});
       passwords[email.toLowerCase()] = password || 'password123';
       safeLocalStorage.setItem('myangan_user_passwords', JSON.stringify(passwords));
 
-      // If they are a broker, seed a broker profile too
       if (role === 'landlord_broker') {
         const brokers = getMockData<Broker>('myangan_brokers');
         const newBroker: Broker = {
@@ -1444,6 +1421,99 @@ export const dbService = {
       return newProfile;
     } else {
       throw new Error('Database Configuration Error: Missing Supabase credentials (VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are required). Registration is disabled in production.');
+    }
+  },
+
+  async verifyOtp(email: string, code: string): Promise<{ user: UserProfile; session: any }> {
+    const normalizedEmail = email.trim().toLowerCase();
+    const cleanCode = code.trim();
+
+    if (isRealSupabaseConfigured && supabase) {
+      // 1. Verify 6-digit OTP code using Supabase Auth to establish authenticated session
+      let { data, error } = await supabase.auth.verifyOtp({
+        email: normalizedEmail,
+        token: cleanCode,
+        type: 'signup'
+      });
+
+      if (error || !data.session) {
+        const fallbackRes = await supabase.auth.verifyOtp({
+          email: normalizedEmail,
+          token: cleanCode,
+          type: 'email'
+        });
+        if (!fallbackRes.error && fallbackRes.data.session) {
+          data = fallbackRes.data;
+          error = null;
+        }
+      }
+
+      if (error || !data.user) {
+        // Fallback: Attempt custom backend API verification
+        try {
+          const res = await fetch('/api/auth/verify-otp', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: normalizedEmail, code: cleanCode, purpose: 'registration_otp' })
+          });
+          if (res.ok) {
+            const result = await res.json();
+            return { user: result.user, session: null };
+          }
+        } catch {
+          // Fall through to throw main error
+        }
+        throw new Error(error?.message || 'Invalid or expired 6-digit verification code.');
+      }
+
+      // Now authenticated! Update profile state cleanly
+      try {
+        await supabase
+          .from('profiles')
+          .update({ is_verified: true, updated_at: new Date().toISOString() })
+          .eq('id', data.user.id);
+      } catch (updErr) {
+        console.warn('[Profile Verification Update Notice]', updErr);
+      }
+
+      const authenticatedUser = await this.getCurrentUser();
+      return {
+        user: authenticatedUser || {
+          id: data.user.id,
+          email: normalizedEmail,
+          name: data.user.user_metadata?.name || 'User',
+          role: data.user.user_metadata?.role || 'renter',
+          is_verified: true
+        },
+        session: data.session
+      };
+    } else if (isMockModeActive) {
+      const users = getMockData<UserProfile>('myangan_users');
+      const idx = users.findIndex(u => u.email.toLowerCase() === normalizedEmail);
+      if (idx !== -1) {
+        users[idx].is_verified = true;
+        saveMockData('myangan_users', users);
+        safeLocalStorage.setItem('myangan_current_user', JSON.stringify(users[idx]));
+        return { user: users[idx], session: null };
+      }
+      throw new Error('User not found.');
+    } else {
+      const response = await fetch('/api/auth/verify-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: normalizedEmail, code: cleanCode, purpose: 'registration_otp' })
+      });
+      const text = await response.text();
+      let result: any = {};
+      try {
+        result = text ? JSON.parse(text) : {};
+      } catch {
+        result = { error: 'Server returned invalid response.' };
+      }
+      if (!response.ok) {
+        throw new Error(result.error || result.message || 'Verification failed.');
+      }
+      return { user: result.user, session: null };
     }
   },
 

@@ -138,38 +138,24 @@ export default function AuthView({ navigateTo, onAuthSuccess, initialRole = 'ren
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch('/api/auth/verify-otp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: signUpEmail.trim(),
-          code: otpCode.trim(),
-          purpose: 'registration_otp',
-        }),
-      });
+      const { user: verifiedUser } = await dbService.verifyOtp(signUpEmail.trim(), otpCode.trim());
 
-      const text = await response.text();
-      let result: any = {};
-      try {
-        result = text ? JSON.parse(text) : {};
-      } catch {
-        const cleanText = text.replace(/<[^>]*>?/gm, '').trim();
-        result = { error: cleanText || `Server returned status code ${response.status}.` };
+      let activeUser = verifiedUser;
+      if (signUpPassword) {
+        try {
+          activeUser = await dbService.signIn(signUpEmail.trim(), signUpPassword);
+        } catch {
+          // Continue with verifiedUser if already authenticated
+        }
       }
 
-      if (!response.ok) {
-        throw new Error(result.error || result.message || 'Verification failed.');
-      }
+      onAuthSuccess(activeUser);
 
-      // Automatically sign in the verified user to sync client-side state
-      const loggedInUser = await dbService.signIn(signUpEmail.trim(), signUpPassword);
-      onAuthSuccess(loggedInUser);
-      
-      if (loggedInUser.account_category === 'landlord_broker' && loggedInUser.onboarding_status === 'pending') {
+      if (activeUser.account_category === 'landlord_broker' && activeUser.onboarding_status === 'pending') {
         navigateTo('onboarding');
-      } else if (loggedInUser.role === 'owner' || loggedInUser.role === 'broker' || loggedInUser.role === 'landlord_broker') {
+      } else if (activeUser.role === 'owner' || activeUser.role === 'broker' || activeUser.role === 'landlord_broker') {
         navigateTo('dashboard');
-      } else if (loggedInUser.role === 'admin') {
+      } else if (activeUser.role === 'admin') {
         navigateTo('admin');
       } else {
         navigateTo('properties');

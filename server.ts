@@ -71,7 +71,7 @@ async function startServer() {
 }
 
 // Run server only if executed directly
-if (process.env.VERCEL !== "1") {
+if (process.env.VERCEL !== "1" && process.env.NODE_ENV !== "test" && !process.env.VITEST) {
   startServer().catch(err => {
     console.error("[Express Server] Critical failure starting full-stack applet:", err);
     process.exit(1);
