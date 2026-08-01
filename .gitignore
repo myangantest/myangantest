@@ -8,3 +8,6 @@ coverage/
 !.env.example
 .cleanup-quarantine/
 supabase/.temp/
+
+.vercel
+.env*
