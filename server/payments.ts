@@ -89,6 +89,24 @@ paymentRouter.post('/orders', async (req: Request, res: Response): Promise<void>
       return;
     }
 
+    const profile = await dbServiceServer.getUserById(user.id);
+    if (profile) {
+      if (profile.account_category === 'landlord_broker' && (profile.onboarding_status === 'pending' || !profile.provider_type)) {
+        res.status(403).json({ error: 'Forbidden: Pending providers must complete onboarding (selecting Owner or Broker) before purchasing plans.' });
+        return;
+      }
+
+      if (plan_type.startsWith('broker_') && profile.role !== 'broker' && profile.role !== 'admin') {
+        res.status(403).json({ error: 'Forbidden: Only verified Brokers may purchase Broker plans.' });
+        return;
+      }
+
+      if (plan_type.startsWith('landlord_') && profile.role !== 'owner' && profile.role !== 'landlord' && profile.role !== 'admin') {
+        res.status(403).json({ error: 'Forbidden: Only verified Property Owners may purchase Owner plans.' });
+        return;
+      }
+    }
+
     const keyId = process.env.RAZORPAY_KEY_ID;
     const keySecret = process.env.RAZORPAY_KEY_SECRET;
 

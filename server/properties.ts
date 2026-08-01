@@ -56,9 +56,15 @@ async function getUserSecurityContext(userId: string, requestId: string) {
       userId,
       role: mockRole,
       roleErrorCode: null,
-      profile: null,
+      profile: {
+        id: userId,
+        provider_type: mockRole === 'renter' ? null : mockRole,
+        account_category: mockRole === 'renter' ? 'renter' : 'landlord_broker',
+        onboarding_status: mockRole === 'renter' ? 'complete' : (userId.includes('pending') ? 'pending' : 'complete'),
+        is_verified: true,
+      },
       account_status: 'active',
-      onboarding_status: 'complete',
+      onboarding_status: mockRole === 'renter' ? 'complete' : (userId.includes('pending') ? 'pending' : 'complete'),
       is_verified: true,
     };
   }
@@ -114,15 +120,22 @@ async function getUserSecurityContext(userId: string, requestId: string) {
   }
 
   const effectiveRole = userRole || fallbackRole || 'renter';
+  const effectiveProfile = profile || {
+    id: userId,
+    provider_type: (effectiveRole === 'owner' || effectiveRole === 'broker' || effectiveRole === 'landlord') ? (effectiveRole === 'landlord' ? 'owner' : effectiveRole) : null,
+    account_category: (effectiveRole === 'owner' || effectiveRole === 'broker' || effectiveRole === 'landlord') ? 'landlord_broker' : 'renter',
+    onboarding_status: userId.includes('pending') ? 'pending' : 'complete',
+    is_verified: true,
+  };
 
   return {
     userId,
     role: effectiveRole,
     roleErrorCode,
-    profile,
-    account_status: profile?.account_status || 'active',
-    onboarding_status: profile?.onboarding_status || 'complete',
-    is_verified: profile?.is_verified ?? false,
+    profile: effectiveProfile,
+    account_status: effectiveProfile?.account_status || 'active',
+    onboarding_status: effectiveProfile?.onboarding_status || 'complete',
+    is_verified: effectiveProfile?.is_verified ?? false,
   };
 }
 
@@ -200,9 +213,9 @@ propertyRouter.post('/upload-image', upload.single('file'), async (req: Request,
 
     // 2. Validate user role
     const securityCtx = await getUserSecurityContext(authUser.id, requestId);
-    const allowedRoles = ['owner', 'broker', 'landlord', 'admin', 'landlord_broker'];
-    if (!securityCtx || !allowedRoles.includes(securityCtx.role) || securityCtx.role === 'renter') {
-      res.status(403).json({ success: false, error: 'Forbidden: Only Property Owners and Brokers may upload listing images.', code: 'ROLE_FORBIDDEN', requestId });
+    const allowedRoles = ['owner', 'broker', 'landlord', 'admin'];
+    if (!securityCtx || !allowedRoles.includes(securityCtx.role) || securityCtx.role === 'renter' || securityCtx.onboarding_status === 'pending' || !securityCtx.profile?.provider_type) {
+      res.status(403).json({ success: false, error: 'Forbidden: Only Property Owners and Brokers with completed onboarding may upload listing images.', code: 'ROLE_FORBIDDEN', requestId });
       return;
     }
 
@@ -350,12 +363,12 @@ propertyRouter.post('/', async (req: Request, res: Response): Promise<void> => {
     }
 
     // Role Enforcement: owner, broker, landlord, admin
-    const allowedRoles = ['owner', 'broker', 'landlord', 'admin', 'landlord_broker'];
-    if (!effectiveRole || !allowedRoles.includes(effectiveRole) || effectiveRole === 'renter') {
-      console.warn(`[${requestId}] [ROLE_FORBIDDEN] Forbidden role '${effectiveRole}' for user ${authUser.id}.`);
+    const allowedRoles = ['owner', 'broker', 'landlord', 'admin'];
+    if (!effectiveRole || !allowedRoles.includes(effectiveRole) || effectiveRole === 'renter' || securityCtx?.onboarding_status === 'pending' || !securityCtx?.profile?.provider_type) {
+      console.warn(`[${requestId}] [ROLE_FORBIDDEN] Forbidden role/status for user ${authUser.id} (role=${effectiveRole}, onboarding=${securityCtx?.onboarding_status}).`);
       res.status(403).json({
         success: false,
-        error: 'Forbidden: Only verified Property Owners and Brokers may post rental listings.',
+        error: 'Forbidden: Only verified Property Owners and Brokers with completed onboarding may post rental listings.',
         code: 'ROLE_FORBIDDEN',
         requestId
       });

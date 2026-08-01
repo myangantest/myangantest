@@ -566,12 +566,17 @@ authRouter.post('/onboarding', async (req: Request, res: Response): Promise<void
       return;
     }
 
+    if (!user.is_verified) {
+      res.status(403).json({ error: 'Forbidden: Account verification required before completing provider selection.' });
+      return;
+    }
+
     if (user.account_category !== 'landlord_broker') {
       res.status(403).json({ error: 'Forbidden: Only accounts with landlord_broker category may complete provider onboarding.' });
       return;
     }
 
-    if (user.onboarding_status === 'complete' && user.provider_type) {
+    if (user.onboarding_status === 'complete' || user.provider_type) {
       if (user.provider_type === provider_type) {
         res.status(200).json({ message: 'Onboarding is already completed.', user });
         return;
