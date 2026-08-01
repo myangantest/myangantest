@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { Request, Response, Router } from 'express';
+import { createClient } from '@supabase/supabase-js';
 import { dbServiceServer, getSupabaseClient, getSupabaseAdminClient, getSupabaseAuthClient, isServerMockActive } from './db.js';
 import { sendEmail, sendPasswordResetOtpEmail, sendPasswordChangedEmail } from './email.js';
 import { getAuthUserFromRequest } from './payments.js';
@@ -48,105 +49,179 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
     return;
   }
 
-  const supabase = getSupabaseAdminClient() || getSupabaseClient();
-  if (!supabase && !isServerMockActive) {
-    res.status(503).json({
-      error: 'Database configuration error: Supabase is unconfigured (VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are missing). Registration is disabled in production.'
+  if (!password || typeof password !== 'string' || password.length < 6) {
+    res.status(400).json({ error: 'Password must be at least 6 characters long.' });
+    return;
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+
+  const isRealSupabase = !!supabaseUrl && !supabaseUrl.includes('placeholder') && !supabaseUrl.includes('your-supabase');
+
+  if (isRealSupabase && !serviceRoleKey) {
+    console.error('❌ Registration Guard: Missing SUPABASE_SERVICE_ROLE_KEY required for administrative registration.');
+    res.status(503).json({ error: 'Registration service temporarily unavailable: Administrative configuration missing.' });
+    return;
+  }
+
+  let adminClient: any = null;
+  if (isRealSupabase && serviceRoleKey) {
+    adminClient = createClient(supabaseUrl, serviceRoleKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
     });
+  }
+
+  if (!adminClient && !isServerMockActive) {
+    res.status(503).json({ error: 'Registration service temporarily unavailable.' });
     return;
   }
 
   try {
-    if (!password || typeof password !== 'string' || password.length < 6) {
-      res.status(400).json({ error: 'Password must be at least 6 characters long.' });
-      return;
-    }
-
-    // Check if user already exists
-    const existingUser = await dbServiceServer.getUserByEmail(email);
-    if (existingUser) {
-      res.status(409).json({ error: 'A user with this email address is already registered.' });
-      return;
-    }
-
     let userId = '';
-    let authErrorMsg = '';
+    let isNewAuthUser = false;
 
-    if (supabase) {
-      // 1. First attempt admin.createUser (if service role key is available)
-      if (process.env.SUPABASE_SERVICE_ROLE_KEY) {
-        try {
-          const { data: adminUser, error: adminErr } = await supabase.auth.admin.createUser({
-            email: email.trim().toLowerCase(),
-            password: password,
-            email_confirm: true,
-            user_metadata: { name, role, phone }
-          });
-          if (!adminErr && adminUser?.user) {
-            userId = adminUser.user.id;
-          } else if (adminErr) {
-            authErrorMsg = adminErr.message;
-          }
-        } catch (err: any) {
-          authErrorMsg = err.message;
+    if (adminClient) {
+      let existingAuthUser: any = null;
+      try {
+        const { data: usersData } = await adminClient.auth.admin.listUsers();
+        if (usersData?.users) {
+          existingAuthUser = usersData.users.find((u: any) => u.email?.toLowerCase() === normalizedEmail);
         }
+      } catch (listErr: any) {
+        console.warn('[Register Notice] Auth user lookup notice:', listErr.message);
       }
 
-      // 2. Fallback to standard signUp if admin was not used or failed
-      if (!userId) {
-        try {
-          const { data: signUpUser, error: signUpErr } = await supabase.auth.signUp({
-            email: email.trim().toLowerCase(),
-            password: password,
-            options: {
-              data: { name, role, phone }
-            }
-          });
-          if (!signUpErr && signUpUser?.user) {
-            userId = signUpUser.user.id;
-          } else if (signUpErr) {
-            authErrorMsg = signUpErr.message;
-          }
-        } catch (err: any) {
-          authErrorMsg = err.message;
-        }
-      }
+      const { data: existingProfile } = await adminClient
+        .from('profiles')
+        .select('*')
+        .eq('email', normalizedEmail)
+        .maybeSingle();
 
-      if (!userId && !isServerMockActive) {
-        res.status(400).json({ error: `Registration failed in Supabase Authentication: ${authErrorMsg || 'Unable to create user account.'}` });
+      if (existingAuthUser && existingProfile) {
+        res.status(409).json({ error: 'A user with this email address is already registered.' });
+        return;
+      } else if (existingProfile && !existingAuthUser) {
+        res.status(409).json({ error: 'A user profile with this email address is already registered.' });
+        return;
+      } else if (existingAuthUser && !existingProfile) {
+        console.log(`[Register Recovery] Recovering incomplete Auth user (ID: ${existingAuthUser.id}) for ${normalizedEmail}`);
+        userId = existingAuthUser.id;
+        isNewAuthUser = false;
+        await adminClient.auth.admin.updateUserById(userId, {
+          password: password,
+          email_confirm: true,
+          user_metadata: { name, role, phone }
+        }).catch((uErr: any) => console.warn('[Register Recovery Notice]', uErr.message));
+      } else {
+        const { data: createData, error: createErr } = await adminClient.auth.admin.createUser({
+          email: normalizedEmail,
+          password: password,
+          email_confirm: true,
+          user_metadata: { name, role, phone }
+        });
+
+        if (createErr || !createData?.user) {
+          res.status(400).json({ error: `Registration failed in Supabase Authentication: ${createErr?.message || 'Unable to create user account.'}` });
+          return;
+        }
+
+        userId = createData.user.id;
+        isNewAuthUser = true;
+      }
+    } else if (isServerMockActive) {
+      const existingUser = await dbServiceServer.getUserByEmail(normalizedEmail);
+      if (existingUser) {
+        res.status(409).json({ error: 'A user with this email address is already registered.' });
         return;
       }
-    }
-
-    if (!userId && isServerMockActive) {
       userId = 'user-' + Math.random().toString(36).substr(2, 9);
-      await dbServiceServer.savePasswordForMock(email, password);
+      await dbServiceServer.savePasswordForMock(normalizedEmail, password);
     }
 
-    // Write user profile to public.users table
-    const userProfile = await dbServiceServer.createUserProfile({
-      id: userId,
-      email: email.trim().toLowerCase(),
-      name: name.trim(),
-      phone: phone ? phone.trim() : '',
-      role,
-      is_verified: false,
-    });
+    let userProfile: any = null;
+    const isLandlordBroker = role === 'landlord_broker';
+    const accountCategory = isLandlordBroker ? 'landlord_broker' : 'renter';
+    const onboardingStatus = isLandlordBroker ? 'pending' : 'complete';
+
+    if (adminClient) {
+      const { data: profData, error: profErr } = await adminClient
+        .from('profiles')
+        .upsert({
+          id: userId,
+          email: normalizedEmail,
+          full_name: name.trim(),
+          phone: phone ? phone.trim() : '',
+          account_category: accountCategory,
+          onboarding_status: onboardingStatus,
+          provider_type: null,
+          account_status: 'pending_verification',
+          is_verified: false,
+          is_subscribed: false,
+          updated_at: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      if (profErr || !profData) {
+        console.error('[Register Error] Profile write failed:', profErr?.message);
+        if (isNewAuthUser && userId) {
+          console.warn(`[Register Cleanup] Deleting partial Auth user ${userId} due to profile failure.`);
+          await adminClient.auth.admin.deleteUser(userId).catch((dErr: any) => console.error('[Cleanup Error]', dErr.message));
+        }
+        res.status(500).json({ error: 'Failed to write user profile to public.profiles table.' });
+        return;
+      }
+
+      const assignedRole = role === 'landlord_broker' ? 'renter' : role;
+      const { error: roleErr } = await adminClient
+        .from('user_roles')
+        .upsert({ user_id: userId, role: assignedRole }, { onConflict: 'user_id,role' });
+
+      if (roleErr) {
+        console.error('[Register Error] Role write failed:', roleErr.message);
+        if (isNewAuthUser && userId) {
+          console.warn(`[Register Cleanup] Deleting partial Auth user ${userId} due to role failure.`);
+          await adminClient.auth.admin.deleteUser(userId).catch((dErr: any) => console.error('[Cleanup Error]', dErr.message));
+        }
+        res.status(500).json({ error: 'Failed to assign user role.' });
+        return;
+      }
+
+      userProfile = {
+        ...profData,
+        name: profData.full_name,
+        role: role,
+        account_category: accountCategory,
+        onboarding_status: onboardingStatus
+      };
+    } else {
+      userProfile = await dbServiceServer.createUserProfile({
+        id: userId,
+        email: normalizedEmail,
+        name: name.trim(),
+        phone: phone ? phone.trim() : '',
+        role,
+        is_verified: false,
+      });
+    }
 
     if (!userProfile) {
-      res.status(500).json({ error: 'Failed to write user profile to public.users table.' });
+      res.status(500).json({ error: 'Failed to complete registration profile.' });
       return;
     }
 
-    // Generate secure 6-digit OTP
     const otpCode = generateOTP();
     const codeHash = hashOTP(otpCode);
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
 
-    // Save hashed OTP verification record in otp_verifications table
     const otpRecord = await dbServiceServer.createOtpVerification({
       user_id: userProfile.id,
-      email: email.trim().toLowerCase(),
+      email: normalizedEmail,
       code_hash: codeHash,
       purpose: 'registration_otp',
       expires_at: expiresAt,
@@ -158,7 +233,6 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
       return;
     }
 
-    // Send transaction email
     const emailHtml = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #f1f5f9; border-radius: 12px; background-color: #ffffff;">
         <div style="text-align: center; margin-bottom: 24px;">
@@ -186,7 +260,7 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
     `;
 
     await sendEmail({
-      to: email.trim(),
+      to: normalizedEmail,
       subject: `${otpCode} is your MyAngan Verification Code`,
       html: emailHtml,
       text: `Your MyAngan verification code is ${otpCode}. It is valid for 10 minutes.`,

@@ -200,7 +200,7 @@ export const dbServiceServer = {
     const accountCategory = isAdmin ? 'admin' : (isLandlordBroker ? 'landlord_broker' : (profile.account_category || 'renter'));
     const onboardingStatus = isLandlordBroker ? 'pending' : 'complete';
 
-    const supabase = getSupabaseAdminClient() || getSupabaseClient();
+    const supabase = getSupabaseAdminClient();
     if (supabase) {
       const { data, error } = await supabase
         .from('profiles')
