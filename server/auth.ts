@@ -15,7 +15,11 @@ export function generateOTP(): string {
 
 // HMAC-SHA-256 OTP hashing using OTP_HASH_SECRET
 export function hashOTP(otp: string): string {
-  const secret = process.env.OTP_HASH_SECRET || 'fallback-myangan-otp-secret';
+  const isDevOrTest = process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test' || !process.env.NODE_ENV;
+  const secret = process.env.OTP_HASH_SECRET || (isDevOrTest ? 'myangan-dev-otp-secret-key-32bytes-min' : '');
+  if (!secret) {
+    throw new Error('Security configuration error: OTP_HASH_SECRET is required.');
+  }
   return crypto.createHmac('sha256', secret).update(otp).digest('hex');
 }
 
@@ -84,6 +88,7 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
   try {
     let userId = '';
     let isNewAuthUser = false;
+    let userProfile: any = null;
 
     if (adminClient) {
       let existingAuthUser: any = null;
@@ -103,26 +108,25 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
         .maybeSingle();
 
       if (existingAuthUser && existingProfile) {
-        res.status(409).json({ error: 'A user with this email address is already registered.' });
-        return;
-      } else if (existingProfile && !existingAuthUser) {
-        res.status(409).json({ error: 'A user profile with this email address is already registered.' });
-        return;
-      } else if (existingAuthUser && !existingProfile) {
-        console.log(`[Register Recovery] Recovering incomplete Auth user (ID: ${existingAuthUser.id}) for ${normalizedEmail}`);
+        if (existingProfile.is_verified) {
+          res.status(409).json({ error: 'A user with this email address is already registered.' });
+          return;
+        }
+        console.log(`[Register Recovery] Restarting OTP verification for unverified user (ID: ${existingAuthUser.id})`);
         userId = existingAuthUser.id;
-        isNewAuthUser = false;
-        await adminClient.auth.admin.updateUserById(userId, {
-          password: password,
-          email_confirm: true,
-          user_metadata: { name, role, phone }
-        }).catch((uErr: any) => console.warn('[Register Recovery Notice]', uErr.message));
+        userProfile = {
+          ...existingProfile,
+          name: existingProfile.full_name,
+          role: existingProfile.account_category === 'landlord_broker' ? 'landlord_broker' : 'renter'
+        };
+      } else if (existingAuthUser && !existingProfile) {
+        userId = existingAuthUser.id;
       } else {
         const { data: createData, error: createErr } = await adminClient.auth.admin.createUser({
           email: normalizedEmail,
           password: password,
           email_confirm: true,
-          user_metadata: { name, role, phone }
+          user_metadata: { name: name.trim(), role, phone: phone ? phone.trim() : '' }
         });
 
         if (createErr || !createData?.user) {
@@ -133,73 +137,69 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
         userId = createData.user.id;
         isNewAuthUser = true;
       }
+
+      if (!userProfile) {
+        const { data: triggerProfile } = await adminClient
+          .from('profiles')
+          .select('*')
+          .eq('id', userId)
+          .maybeSingle();
+
+        if (triggerProfile) {
+          userProfile = {
+            ...triggerProfile,
+            name: triggerProfile.full_name,
+            role: triggerProfile.account_category === 'landlord_broker' ? 'landlord_broker' : 'renter'
+          };
+        } else {
+          const isLandlordBroker = role === 'landlord_broker';
+          const accountCategory = isLandlordBroker ? 'landlord_broker' : 'renter';
+          const onboardingStatus = isLandlordBroker ? 'pending' : 'complete';
+
+          const { data: profData, error: profErr } = await adminClient
+            .from('profiles')
+            .upsert({
+              id: userId,
+              email: normalizedEmail,
+              full_name: name.trim(),
+              phone: phone ? phone.trim() : '',
+              account_category: accountCategory,
+              onboarding_status: onboardingStatus,
+              provider_type: null,
+              account_status: 'pending_verification',
+              is_verified: false,
+              is_subscribed: false,
+              updated_at: new Date().toISOString()
+            })
+            .select()
+            .single();
+
+          if (profErr || !profData) {
+            console.error('[Register Error] Profile write failed:', profErr?.message);
+            if (isNewAuthUser && userId) {
+              await adminClient.auth.admin.deleteUser(userId).catch(() => {});
+            }
+            res.status(500).json({ error: 'Failed to write user profile.' });
+            return;
+          }
+
+          userProfile = {
+            ...profData,
+            name: profData.full_name,
+            role: role,
+            account_category: accountCategory,
+            onboarding_status: onboardingStatus
+          };
+        }
+      }
     } else if (isServerMockActive) {
       const existingUser = await dbServiceServer.getUserByEmail(normalizedEmail);
-      if (existingUser) {
+      if (existingUser && existingUser.is_verified) {
         res.status(409).json({ error: 'A user with this email address is already registered.' });
         return;
       }
-      userId = 'user-' + Math.random().toString(36).substr(2, 9);
+      userId = existingUser?.id || ('user-' + Math.random().toString(36).substr(2, 9));
       await dbServiceServer.savePasswordForMock(normalizedEmail, password);
-    }
-
-    let userProfile: any = null;
-    const isLandlordBroker = role === 'landlord_broker';
-    const accountCategory = isLandlordBroker ? 'landlord_broker' : 'renter';
-    const onboardingStatus = isLandlordBroker ? 'pending' : 'complete';
-
-    if (adminClient) {
-      const { data: profData, error: profErr } = await adminClient
-        .from('profiles')
-        .upsert({
-          id: userId,
-          email: normalizedEmail,
-          full_name: name.trim(),
-          phone: phone ? phone.trim() : '',
-          account_category: accountCategory,
-          onboarding_status: onboardingStatus,
-          provider_type: null,
-          account_status: 'pending_verification',
-          is_verified: false,
-          is_subscribed: false,
-          updated_at: new Date().toISOString()
-        })
-        .select()
-        .single();
-
-      if (profErr || !profData) {
-        console.error('[Register Error] Profile write failed:', profErr?.message);
-        if (isNewAuthUser && userId) {
-          console.warn(`[Register Cleanup] Deleting partial Auth user ${userId} due to profile failure.`);
-          await adminClient.auth.admin.deleteUser(userId).catch((dErr: any) => console.error('[Cleanup Error]', dErr.message));
-        }
-        res.status(500).json({ error: 'Failed to write user profile to public.profiles table.' });
-        return;
-      }
-
-      const assignedRole = role === 'landlord_broker' ? 'renter' : role;
-      const { error: roleErr } = await adminClient
-        .from('user_roles')
-        .upsert({ user_id: userId, role: assignedRole }, { onConflict: 'user_id,role' });
-
-      if (roleErr) {
-        console.error('[Register Error] Role write failed:', roleErr.message);
-        if (isNewAuthUser && userId) {
-          console.warn(`[Register Cleanup] Deleting partial Auth user ${userId} due to role failure.`);
-          await adminClient.auth.admin.deleteUser(userId).catch((dErr: any) => console.error('[Cleanup Error]', dErr.message));
-        }
-        res.status(500).json({ error: 'Failed to assign user role.' });
-        return;
-      }
-
-      userProfile = {
-        ...profData,
-        name: profData.full_name,
-        role: role,
-        account_category: accountCategory,
-        onboarding_status: onboardingStatus
-      };
-    } else {
       userProfile = await dbServiceServer.createUserProfile({
         id: userId,
         email: normalizedEmail,
@@ -229,7 +229,7 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
     });
 
     if (!otpRecord) {
-      res.status(500).json({ error: 'Failed to write OTP verification record to otp_verifications table.' });
+      res.status(500).json({ error: 'Failed to write OTP verification record.' });
       return;
     }
 
@@ -259,7 +259,7 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
       </div>
     `;
 
-    await sendEmail({
+    const emailResult = await sendEmail({
       to: normalizedEmail,
       subject: `${otpCode} is your MyAngan Verification Code`,
       html: emailHtml,
@@ -267,6 +267,18 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
       notificationType: 'registration_otp',
       metadata: { userId: userProfile.id }
     });
+
+    if (!emailResult.success) {
+      console.error(`[Register SMTP Failure] Failed to send registration OTP email to ${normalizedEmail}: ${emailResult.error}`);
+      if (isNewAuthUser && userId && adminClient) {
+        console.warn(`[Register Cleanup] Deleting newly created Auth user ${userId} due to SMTP failure.`);
+        await adminClient.auth.admin.deleteUser(userId).catch(() => {});
+      }
+      res.status(502).json({
+        error: 'Failed to deliver verification email. Please verify your email address or try again later.'
+      });
+      return;
+    }
 
     res.status(200).json({
       message: 'Registration successful. Verification OTP sent.',
@@ -276,6 +288,109 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
   } catch (err: any) {
     console.error('[Backend Auth] Registration error:', err);
     res.status(500).json({ error: err.message || 'An error occurred during registration.' });
+  }
+});
+
+/**
+ * POST /api/auth/resend-otp
+ * Resend verification OTP to incomplete user
+ */
+authRouter.post('/resend-otp', async (req: Request, res: Response): Promise<void> => {
+  const { email } = req.body;
+  if (!email || typeof email !== 'string') {
+    res.status(400).json({ error: 'Email address is required.' });
+    return;
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  try {
+    const user = await dbServiceServer.getUserByEmail(normalizedEmail);
+    if (!user) {
+      res.status(404).json({ error: 'No account found matching this email address.' });
+      return;
+    }
+
+    if (user.is_verified) {
+      res.status(400).json({ error: 'This account is already verified.' });
+      return;
+    }
+
+    const latestOtp = await dbServiceServer.getLatestOtpVerification(normalizedEmail, 'registration_otp');
+    if (latestOtp) {
+      const createdAtMs = new Date(latestOtp.created_at).getTime();
+      const nowMs = Date.now();
+      const elapsedSeconds = (nowMs - createdAtMs) / 1000;
+
+      if (elapsedSeconds < 60) {
+        const remainingSeconds = Math.ceil(60 - elapsedSeconds);
+        res.status(429).json({ error: `Please wait ${remainingSeconds} seconds before requesting another code.` });
+        return;
+      }
+    }
+
+    const otpCode = generateOTP();
+    const codeHash = hashOTP(otpCode);
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+    const newOtp = await dbServiceServer.createOtpVerification({
+      user_id: user.id,
+      email: normalizedEmail,
+      code_hash: codeHash,
+      purpose: 'registration_otp',
+      expires_at: expiresAt,
+      request_ip: req.ip,
+    });
+
+    if (!newOtp) {
+      res.status(500).json({ error: 'Failed to generate new verification OTP.' });
+      return;
+    }
+
+    const emailHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #f1f5f9; border-radius: 12px; background-color: #ffffff;">
+        <div style="text-align: center; margin-bottom: 24px;">
+          <h1 style="color: #0F1F3D; margin: 0; font-size: 26px; font-weight: bold; tracking-tight: -0.05em;">MyAngan</h1>
+          <p style="color: #f97316; margin: 0; font-size: 13px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; margin-top: 4px;">Gurugram & South Delhi Rental Portal</p>
+        </div>
+        <h2 style="color: #1e293b; font-size: 18px; font-weight: bold; margin-bottom: 16px; text-align: center;">Verify Your Registration</h2>
+        <p style="color: #475569; font-size: 14px; line-height: 1.6; margin-bottom: 24px;">
+          Please use the following 6-digit verification code to complete your registration. This code is valid for <strong>10 minutes</strong>.
+        </p>
+        <div style="text-align: center; margin: 28px 0;">
+          <span style="font-family: 'Courier New', monospace; font-size: 36px; font-weight: bold; letter-spacing: 6px; color: #0F1F3D; background-color: #f8fafc; padding: 14px 28px; border-radius: 12px; border: 1px solid #e2e8f0; display: inline-block; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+            ${otpCode}
+          </span>
+        </div>
+        <p style="color: #94a3b8; font-size: 12px; margin-bottom: 24px; text-align: center; line-height: 1.5;">
+          <strong>Security notice:</strong> Raw OTP codes are never logged or stored in plain text. Never share this verification code with anyone.
+        </p>
+        <hr style="border: none; border-top: 1px solid #f1f5f9; margin: 24px 0;" />
+        <p style="color: #94a3b8; font-size: 11px; text-align: center; line-height: 1.4;">
+          MyAngan • Premium Delhi NCR Real Estate Services<br />
+          This is an automated security communication. Please do not reply directly to this email.
+        </p>
+      </div>
+    `;
+
+    const emailResult = await sendEmail({
+      to: normalizedEmail,
+      subject: `${otpCode} is your MyAngan Verification Code`,
+      html: emailHtml,
+      text: `Your MyAngan verification code is ${otpCode}. It is valid for 10 minutes.`,
+      notificationType: 'registration_otp',
+      metadata: { userId: user.id }
+    });
+
+    if (!emailResult.success) {
+      console.error(`[Resend OTP Failure] Failed to send email to ${normalizedEmail}: ${emailResult.error}`);
+      res.status(502).json({ error: 'Failed to deliver verification email. Please try again later.' });
+      return;
+    }
+
+    res.status(200).json({ message: 'A new verification code has been sent to your email.' });
+  } catch (err: any) {
+    console.error('[Resend OTP Error]', err);
+    res.status(500).json({ error: 'Failed to resend verification code.' });
   }
 });
 

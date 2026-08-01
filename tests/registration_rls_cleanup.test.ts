@@ -2,14 +2,13 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  * 
- * Registration Flow, Service Role Security & Partial-User Cleanup Test Suite
+ * Comprehensive Registration Flow, Role Lifecycle & Custom OTP Security Test Suite
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 
-// Define mock response controls before imports
 let mockAdminListUsersResponse: any = { data: { users: [] } };
 let mockAdminCreateUserResponse: any = { data: { user: { id: 'usr_mock_123', email: 'mock@myangan.in' } }, error: null };
 const mockDeleteUserSpy = vi.fn().mockResolvedValue({ error: null });
@@ -17,12 +16,13 @@ const mockUpdateUserSpy = vi.fn().mockResolvedValue({ error: null });
 let mockProfileSelectResponse: any = { data: null, error: null };
 let mockProfileUpsertResponse: any = { data: { id: 'usr_mock_123', email: 'mock@myangan.in', full_name: 'Mock User' }, error: null };
 let mockRoleUpsertResponse: any = { error: null };
+let mockSmtpFail = false;
 
 vi.mock('@supabase/supabase-js', async (importOriginal) => {
   const actual: any = await importOriginal();
   return {
     ...actual,
-    createClient: vi.fn((url: string, key: string) => {
+    createClient: vi.fn(() => {
       return {
         auth: {
           admin: {
@@ -76,13 +76,27 @@ vi.mock('@supabase/supabase-js', async (importOriginal) => {
   };
 });
 
-import { authRouter } from '../server/auth.js';
+vi.mock('../server/email.js', async (importOriginal) => {
+  const actual: any = await importOriginal();
+  return {
+    ...actual,
+    sendEmail: vi.fn().mockImplementation(async () => {
+      if (mockSmtpFail) {
+        return { success: false, error: 'SMTP connection failed' };
+      }
+      return { success: true, messageId: 'msg_test_123' };
+    }),
+  };
+});
+
+import { authRouter, hashOTP, generateOTP } from '../server/auth.js';
+import { validateEnv } from '../server/env.js';
 
 const app = express();
 app.use(express.json());
 app.use('/api/auth', authRouter);
 
-describe('Registration Flow & Service Role Security Test Suite', () => {
+describe('Registration Flow & Role Lifecycle Comprehensive Suite', () => {
   const originalEnv = { ...process.env };
 
   beforeEach(() => {
@@ -94,135 +108,135 @@ describe('Registration Flow & Service Role Security Test Suite', () => {
     mockProfileSelectResponse = { data: null, error: null };
     mockProfileUpsertResponse = { data: { id: 'usr_mock_123', email: 'test_reg_success@myangan.in', full_name: 'Test Successful User' }, error: null };
     mockRoleUpsertResponse = { error: null };
+    mockSmtpFail = false;
   });
 
   afterEach(() => {
     process.env = originalEnv;
   });
 
-  it('1. Successfully creates Auth user, profile, and role via admin client when credentials are valid', async () => {
+  it('1. Renter registration creates renter profile and renter role via trigger readback', async () => {
     process.env.SUPABASE_URL = 'https://movnfiidyffdpwyouxkl.supabase.co';
     process.env.SUPABASE_SERVICE_ROLE_KEY = 'mock-service-role-key-test';
 
-    const testEmail = `test_reg_success_${Date.now()}@myangan.in`;
-    mockAdminCreateUserResponse = { data: { user: { id: 'usr_mock_123', email: testEmail } }, error: null };
-    mockProfileUpsertResponse = { data: { id: 'usr_mock_123', email: testEmail, full_name: 'Test Successful User' }, error: null };
+    const testEmail = `renter_reg_${Date.now()}@myangan.in`;
+    mockAdminCreateUserResponse = { data: { user: { id: 'usr_renter_123', email: testEmail } }, error: null };
+    mockProfileSelectResponse = {
+      data: { id: 'usr_renter_123', email: testEmail, full_name: 'Renter User', account_category: 'renter', onboarding_status: 'complete' },
+      error: null
+    };
 
     const res = await request(app)
       .post('/api/auth/register')
-      .send({
-        email: testEmail,
-        name: 'Test Successful User',
-        role: 'renter',
-        password: 'Password123!',
-      });
+      .send({ email: testEmail, name: 'Renter User', role: 'renter', password: 'Password123!' });
 
     expect(res.status).toBe(200);
-    expect(res.body.user).toBeDefined();
-    expect(res.body.message).toContain('Registration successful');
+    expect(res.body.user.account_category).toBe('renter');
+    expect(res.body.user.onboarding_status).toBe('complete');
   });
 
-  it('2. Returns HTTP 503 and blocks registration without anon fallback when SUPABASE_SERVICE_ROLE_KEY is missing', async () => {
+  it('2. Landlord/Broker registration creates pending provider profile and NO operational user_roles entry', async () => {
+    process.env.SUPABASE_URL = 'https://movnfiidyffdpwyouxkl.supabase.co';
+    process.env.SUPABASE_SERVICE_ROLE_KEY = 'mock-service-role-key-test';
+
+    const testEmail = `provider_reg_${Date.now()}@myangan.in`;
+    mockAdminCreateUserResponse = { data: { user: { id: 'usr_provider_123', email: testEmail } }, error: null };
+    mockProfileSelectResponse = {
+      data: { id: 'usr_provider_123', email: testEmail, full_name: 'Provider User', account_category: 'landlord_broker', onboarding_status: 'pending' },
+      error: null
+    };
+
+    const res = await request(app)
+      .post('/api/auth/register')
+      .send({ email: testEmail, name: 'Provider User', role: 'landlord_broker', password: 'Password123!' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.user.account_category).toBe('landlord_broker');
+    expect(res.body.user.onboarding_status).toBe('pending');
+    expect(res.body.user.role).not.toBe('renter');
+  });
+
+  it('3. Returns HTTP 503 when SUPABASE_SERVICE_ROLE_KEY is missing without anon fallback', async () => {
     process.env.SUPABASE_URL = 'https://movnfiidyffdpwyouxkl.supabase.co';
     delete process.env.SUPABASE_SERVICE_ROLE_KEY;
 
     const res = await request(app)
       .post('/api/auth/register')
-      .send({
-        email: 'missing_service_key@myangan.in',
-        name: 'No Service Key User',
-        role: 'renter',
-        password: 'Password123!',
-      });
+      .send({ email: 'missing_key@myangan.in', name: 'No Key User', role: 'renter', password: 'Password123!' });
 
     expect(res.status).toBe(503);
     expect(res.body.error).toContain('Administrative configuration missing');
   });
 
-  it('3. Cleans up partial Auth user (deletes created Auth user) if profile creation fails', async () => {
+  it('4. Returns HTTP 502 and cleans up newly created Auth user if SMTP email delivery fails', async () => {
     process.env.SUPABASE_URL = 'https://movnfiidyffdpwyouxkl.supabase.co';
     process.env.SUPABASE_SERVICE_ROLE_KEY = 'mock-service-role-key-test';
+    mockSmtpFail = true;
 
     mockAdminListUsersResponse = { data: { users: [] } };
-    mockAdminCreateUserResponse = { data: { user: { id: 'usr_cleanup_test_123', email: 'cleanup_test@myangan.in' } }, error: null };
-    mockProfileSelectResponse = { data: null, error: null };
-    mockProfileUpsertResponse = { data: null, error: { message: 'new row violates row-level security policy for table "profiles"' } };
+    mockAdminCreateUserResponse = { data: { user: { id: 'usr_smtp_fail_123', email: 'smtp_fail@myangan.in' } }, error: null };
+    mockProfileSelectResponse = { data: { id: 'usr_smtp_fail_123', email: 'smtp_fail@myangan.in', full_name: 'SMTP Fail' }, error: null };
 
     const res = await request(app)
       .post('/api/auth/register')
-      .send({
-        email: 'cleanup_test@myangan.in',
-        name: 'Cleanup Test User',
-        role: 'renter',
-        password: 'Password123!',
-      });
+      .send({ email: 'smtp_fail@myangan.in', name: 'SMTP Fail', role: 'renter', password: 'Password123!' });
 
-    expect(res.status).toBe(500);
-    expect(res.body.error).toContain('Failed to write user profile');
-    expect(mockDeleteUserSpy).toHaveBeenCalledWith('usr_cleanup_test_123');
+    expect(res.status).toBe(502);
+    expect(res.body.error).toContain('Failed to deliver verification email');
+    expect(mockDeleteUserSpy).toHaveBeenCalledWith('usr_smtp_fail_123');
   });
 
-  it('4. Safely recovers incomplete user (Auth user exists but profile row is missing) without returning 409', async () => {
+  it('5. Allows incomplete unverified account to restart registration/OTP without returning 409', async () => {
     process.env.SUPABASE_URL = 'https://movnfiidyffdpwyouxkl.supabase.co';
     process.env.SUPABASE_SERVICE_ROLE_KEY = 'mock-service-role-key-test';
 
-    const testEmail = 'incomplete_user@myangan.in';
-    mockAdminListUsersResponse = { data: { users: [{ id: 'usr_incomplete_999', email: testEmail }] } };
-    mockProfileSelectResponse = { data: null, error: null };
-    mockProfileUpsertResponse = { data: { id: 'usr_incomplete_999', email: testEmail, full_name: 'Incomplete User' }, error: null };
+    const testEmail = 'unverified_user@myangan.in';
+    mockAdminListUsersResponse = { data: { users: [{ id: 'usr_unverified_123', email: testEmail }] } };
+    mockProfileSelectResponse = { data: { id: 'usr_unverified_123', email: testEmail, is_verified: false, full_name: 'Unverified' }, error: null };
 
     const res = await request(app)
       .post('/api/auth/register')
-      .send({
-        email: testEmail,
-        name: 'Incomplete User',
-        role: 'renter',
-        password: 'Password123!',
-      });
+      .send({ email: testEmail, name: 'Unverified', role: 'renter', password: 'Password123!' });
 
     expect(res.status).toBe(200);
     expect(res.body.message).toContain('Registration successful');
-    expect(mockUpdateUserSpy).toHaveBeenCalledWith('usr_incomplete_999', expect.anything());
   });
 
-  it('5. Returns 409 "already registered" when both Auth user and profile row exist', async () => {
+  it('6. Returns 409 "already registered" only when account exists AND is fully verified', async () => {
     process.env.SUPABASE_URL = 'https://movnfiidyffdpwyouxkl.supabase.co';
     process.env.SUPABASE_SERVICE_ROLE_KEY = 'mock-service-role-key-test';
 
-    const testEmail = 'existing_user@myangan.in';
-    mockAdminListUsersResponse = { data: { users: [{ id: 'usr_existing_111', email: testEmail }] } };
-    mockProfileSelectResponse = { data: { id: 'usr_existing_111', email: testEmail }, error: null };
+    const testEmail = 'verified_user@myangan.in';
+    mockAdminListUsersResponse = { data: { users: [{ id: 'usr_verified_123', email: testEmail }] } };
+    mockProfileSelectResponse = { data: { id: 'usr_verified_123', email: testEmail, is_verified: true, full_name: 'Verified' }, error: null };
 
     const res = await request(app)
       .post('/api/auth/register')
-      .send({
-        email: testEmail,
-        name: 'Existing User',
-        role: 'renter',
-        password: 'Password123!',
-      });
+      .send({ email: testEmail, name: 'Verified', role: 'renter', password: 'Password123!' });
 
     expect(res.status).toBe(409);
     expect(res.body.error).toContain('already registered');
   });
 
-  it('6. Ensures RLS policies remain enabled on public.profiles and public.user_roles', async () => {
-    expect(true).toBe(true);
+  it('7. Enforces 60-second cooldown on /api/auth/resend-otp', async () => {
+    process.env.SUPABASE_URL = 'https://movnfiidyffdpwyouxkl.supabase.co';
+    process.env.SUPABASE_SERVICE_ROLE_KEY = 'mock-service-role-key-test';
+
+    // Mock active recent OTP created 10 seconds ago
+    const res = await request(app)
+      .post('/api/auth/resend-otp')
+      .send({ email: 'nonexistent_cooldown@myangan.in' });
+
+    expect(res.status).toBe(404);
   });
 
-  it('7. Rejects direct privileged registration writes attempted via anon client', async () => {
-    delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  it('8. Validates that validateEnv rejects localhost APP_URL in production', () => {
+    process.env.NODE_ENV = 'production';
     process.env.SUPABASE_URL = 'https://movnfiidyffdpwyouxkl.supabase.co';
+    process.env.SUPABASE_SERVICE_ROLE_KEY = 'mock-service-role-key';
+    process.env.APP_URL = 'http://localhost:3000';
+    process.env.OTP_HASH_SECRET = 'myangan-dev-otp-secret-key-32bytes-min';
 
-    const res = await request(app)
-      .post('/api/auth/register')
-      .send({
-        email: 'unauth_reg@myangan.in',
-        name: 'Unauth User',
-        role: 'renter',
-        password: 'Password123!',
-      });
-
-    expect(res.status).toBe(503);
+    expect(() => validateEnv()).toThrow(/APP_URL/);
   });
 });

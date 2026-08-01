@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 // Environment variable detection for server side
 const serverUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-const anonKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || serviceRoleKey;
+const anonKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
 
 const isServerUrlDetected = !!serverUrl && 
   !serverUrl.includes('placeholder') && 
@@ -265,7 +265,7 @@ export const dbServiceServer = {
   },
 
   async completeLandlordBrokerOnboarding(userId: string, providerType: 'owner' | 'broker') {
-    const supabase = getSupabaseClient();
+    const supabase = getSupabaseAdminClient();
     const now = new Date().toISOString();
 
     if (supabase) {
@@ -409,7 +409,7 @@ export const dbServiceServer = {
         if (updates.role) {
           await supabase
             .from('user_roles')
-            .upsert({ user_id: userId, role: updates.role }, { onConflict: 'user_id,role' });
+            .upsert({ user_id: userId, role: updates.role }, { onConflict: 'user_id' });
         }
         return { ...data, name: data.full_name };
       }

@@ -65,7 +65,6 @@ export function getTransporter(): nodemailer.Transporter | null {
       port,
       secure,
       auth: { user, pass },
-      tls: { rejectUnauthorized: false },
     });
     return nodemailerTransporter;
   } catch (err) {
@@ -84,8 +83,9 @@ export async function sendEmail(params: SendEmailParams): Promise<{ success: boo
   const finalText = textContent || text || '';
   const finalTemplate = templateType || notificationType || 'general';
 
-  const fromEmail = process.env.EMAIL_FROM || process.env.SMTP_USER || 'noreply@myangan.in';
-  const replyToEmail = replyTo || process.env.EMAIL_REPLY_TO || fromEmail;
+  const rawFrom = process.env.EMAIL_FROM || process.env.SMTP_USER || 'noreply@myangan.in';
+  const fromAddress = rawFrom.includes('<') ? rawFrom : `MyAngan Rentals <${rawFrom}>`;
+  const replyToEmail = replyTo || process.env.EMAIL_REPLY_TO || (rawFrom.includes('<') ? rawFrom.split('<')[1].replace('>', '').trim() : rawFrom);
 
   const transporter = getTransporter();
   let attempts = 0;
@@ -99,7 +99,7 @@ export async function sendEmail(params: SendEmailParams): Promise<{ success: boo
       attempts++;
       try {
         const info = await transporter.sendMail({
-          from: `MyAngan Rentals <${fromEmail}>`,
+          from: fromAddress,
           to,
           replyTo: replyToEmail,
           subject,
