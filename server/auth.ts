@@ -108,20 +108,50 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
         .maybeSingle();
 
       if (existingAuthUser && existingProfile) {
-        if (existingProfile.is_verified) {
+        // State E: Account exists and is fully verified (and for landlord_broker, onboarding complete)
+        const isRenterAccount = existingProfile.account_category === 'renter' || !existingProfile.account_category;
+        const isCompletedProvider = existingProfile.account_category === 'landlord_broker' && existingProfile.onboarding_status === 'complete';
+        if (existingProfile.is_verified && (isRenterAccount || isCompletedProvider)) {
           res.status(409).json({ error: 'A user with this email address is already registered.' });
           return;
         }
-        console.log(`[Register Recovery] Restarting OTP verification for unverified user (ID: ${existingAuthUser.id})`);
+
+        // State D / State C: Unverified or incomplete account recovery (e.g. pending landlord_broker or unverified renter)
+        console.log(`[Register Recovery] Resuming registration / OTP verification for unverified account (ID: ${existingAuthUser.id})`);
         userId = existingAuthUser.id;
+        isNewAuthUser = false;
         userProfile = {
           ...existingProfile,
           name: existingProfile.full_name,
           role: existingProfile.account_category === 'landlord_broker' ? 'landlord_broker' : 'renter'
         };
+
+        // State C Repair: Ensure renter account has renter operational role
+        if (isRenterAccount) {
+          try {
+            const { data: roleData } = await adminClient
+              .from('user_roles')
+              .select('role')
+              .eq('user_id', userId)
+              .maybeSingle();
+
+            if (!roleData) {
+              console.log(`[Register Recovery] Repairing missing renter role for user ${userId}`);
+              await adminClient
+                .from('user_roles')
+                .upsert({ user_id: userId, role: 'renter' }, { onConflict: 'user_id' });
+            }
+          } catch (rErr: any) {
+            console.warn('[Register Recovery Role Notice]', rErr.message);
+          }
+        }
       } else if (existingAuthUser && !existingProfile) {
+        // State B: Auth user exists but profile row is missing
+        console.log(`[Register Recovery] Recovering incomplete Auth user missing profile row (ID: ${existingAuthUser.id})`);
         userId = existingAuthUser.id;
+        isNewAuthUser = false;
       } else {
+        // State A: Auth user does not exist -> Create new Auth User
         const { data: createData, error: createErr } = await adminClient.auth.admin.createUser({
           email: normalizedEmail,
           password: password,
@@ -170,17 +200,25 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
               is_verified: false,
               is_subscribed: false,
               updated_at: new Date().toISOString()
-            })
+            }, { onConflict: 'id' })
             .select()
             .single();
 
           if (profErr || !profData) {
             console.error('[Register Error] Profile write failed:', profErr?.message);
             if (isNewAuthUser && userId) {
+              console.warn(`[Register Cleanup] Deleting newly created Auth user ${userId} due to profile creation failure.`);
               await adminClient.auth.admin.deleteUser(userId).catch(() => {});
             }
             res.status(500).json({ error: 'Failed to write user profile.' });
             return;
+          }
+
+          if (accountCategory === 'renter') {
+            await adminClient
+              .from('user_roles')
+              .upsert({ user_id: userId, role: 'renter' }, { onConflict: 'user_id' })
+              .catch((rErr: any) => console.warn('[Role Repair Notice]', rErr.message));
           }
 
           userProfile = {
@@ -211,6 +249,9 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
     }
 
     if (!userProfile) {
+      if (isNewAuthUser && userId && adminClient) {
+        await adminClient.auth.admin.deleteUser(userId).catch(() => {});
+      }
       res.status(500).json({ error: 'Failed to complete registration profile.' });
       return;
     }
@@ -229,6 +270,11 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
     });
 
     if (!otpRecord) {
+      if (isNewAuthUser && userId && adminClient) {
+        console.warn(`[Register Cleanup] Deleting newly created Auth user ${userId} due to OTP record failure.`);
+        await adminClient.auth.admin.deleteUser(userId).catch(() => {});
+        await adminClient.from('profiles').delete().eq('id', userId).catch(() => {});
+      }
       res.status(500).json({ error: 'Failed to write OTP verification record.' });
       return;
     }

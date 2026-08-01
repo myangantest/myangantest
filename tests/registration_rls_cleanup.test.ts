@@ -50,6 +50,7 @@ vi.mock('@supabase/supabase-js', async (importOriginal) => {
           }
           if (table === 'user_roles') {
             return {
+              select: () => ({ eq: () => ({ maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }) }) }),
               upsert: vi.fn().mockImplementation(() => Promise.resolve(mockRoleUpsertResponse)),
             };
           }
@@ -261,8 +262,60 @@ describe('Registration Flow & Role Lifecycle Comprehensive Suite', () => {
   });
 
   it('10. Asserts user_roles upsert operations use conflict target matching UNIQUE(user_id)', async () => {
-    // Verify in db.ts that completeLandlordBrokerOnboarding uses onConflict: 'user_id'
     const { dbServiceServer } = await import('../server/db.js');
     expect(dbServiceServer.completeLandlordBrokerOnboarding).toBeDefined();
+  });
+
+  it('11. Cleans up newly created Auth user if profile creation fails', async () => {
+    process.env.SUPABASE_URL = 'https://movnfiidyffdpwyouxkl.supabase.co';
+    process.env.SUPABASE_SERVICE_ROLE_KEY = 'mock-service-role-key-test';
+
+    mockAdminListUsersResponse = { data: { users: [] } };
+    mockAdminCreateUserResponse = { data: { user: { id: 'usr_fail_prof_999', email: 'fail_prof@myangan.in' } }, error: null };
+    mockProfileSelectResponse = { data: null, error: null };
+    mockProfileUpsertResponse = { data: null, error: { message: 'Database connection failed' } };
+
+    const res = await request(app)
+      .post('/api/auth/register')
+      .send({ email: 'fail_prof@myangan.in', name: 'Fail Prof', role: 'renter', password: 'Password123!' });
+
+    expect(res.status).toBe(500);
+    expect(mockDeleteUserSpy).toHaveBeenCalledWith('usr_fail_prof_999');
+  });
+
+  it('12. Recovers incomplete renter account and ensures renter role is safely repaired', async () => {
+    process.env.SUPABASE_URL = 'https://movnfiidyffdpwyouxkl.supabase.co';
+    process.env.SUPABASE_SERVICE_ROLE_KEY = 'mock-service-role-key-test';
+
+    const testEmail = 'inc_renter@myangan.in';
+    mockAdminListUsersResponse = { data: { users: [{ id: 'usr_inc_renter_111', email: testEmail }] } };
+    mockProfileSelectResponse = { data: { id: 'usr_inc_renter_111', email: testEmail, account_category: 'renter', is_verified: false, full_name: 'Incomplete Renter' }, error: null };
+
+    const res = await request(app)
+      .post('/api/auth/register')
+      .send({ email: testEmail, name: 'Incomplete Renter', role: 'renter', password: 'Password123!' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.user.role).toBe('renter');
+    // Pre-existing user MUST NOT be deleted
+    expect(mockDeleteUserSpy).not.toHaveBeenCalledWith('usr_inc_renter_111');
+  });
+
+  it('13. Recovers incomplete landlord_broker account without error or 409', async () => {
+    process.env.SUPABASE_URL = 'https://movnfiidyffdpwyouxkl.supabase.co';
+    process.env.SUPABASE_SERVICE_ROLE_KEY = 'mock-service-role-key-test';
+
+    const testEmail = 'inc_provider@myangan.in';
+    mockAdminListUsersResponse = { data: { users: [{ id: 'usr_inc_provider_222', email: testEmail }] } };
+    mockProfileSelectResponse = { data: { id: 'usr_inc_provider_222', email: testEmail, account_category: 'landlord_broker', onboarding_status: 'pending', is_verified: false, full_name: 'Incomplete Provider' }, error: null };
+
+    const res = await request(app)
+      .post('/api/auth/register')
+      .send({ email: testEmail, name: 'Incomplete Provider', role: 'landlord_broker', password: 'Password123!' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.user.account_category).toBe('landlord_broker');
+    expect(res.body.user.onboarding_status).toBe('pending');
+    expect(mockDeleteUserSpy).not.toHaveBeenCalledWith('usr_inc_provider_222');
   });
 });
