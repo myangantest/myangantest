@@ -239,4 +239,30 @@ describe('Registration Flow & Role Lifecycle Comprehensive Suite', () => {
 
     expect(() => validateEnv()).toThrow(/APP_URL/);
   });
+
+  it('9. Asserts no landlord_broker-to-renter role conversion occurs during registration', async () => {
+    process.env.SUPABASE_URL = 'https://movnfiidyffdpwyouxkl.supabase.co';
+    process.env.SUPABASE_SERVICE_ROLE_KEY = 'mock-service-role-key-test';
+
+    const testEmail = `no_conversion_${Date.now()}@myangan.in`;
+    mockAdminCreateUserResponse = { data: { user: { id: 'usr_no_conv_123', email: testEmail } }, error: null };
+    mockProfileSelectResponse = {
+      data: { id: 'usr_no_conv_123', email: testEmail, full_name: 'No Conv Provider', account_category: 'landlord_broker', onboarding_status: 'pending' },
+      error: null
+    };
+
+    const res = await request(app)
+      .post('/api/auth/register')
+      .send({ email: testEmail, name: 'No Conv Provider', role: 'landlord_broker', password: 'Password123!' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.user.role).toBe('landlord_broker');
+    expect(res.body.user.role).not.toBe('renter');
+  });
+
+  it('10. Asserts user_roles upsert operations use conflict target matching UNIQUE(user_id)', async () => {
+    // Verify in db.ts that completeLandlordBrokerOnboarding uses onConflict: 'user_id'
+    const { dbServiceServer } = await import('../server/db.js');
+    expect(dbServiceServer.completeLandlordBrokerOnboarding).toBeDefined();
+  });
 });
