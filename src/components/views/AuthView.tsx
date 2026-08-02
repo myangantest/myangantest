@@ -298,7 +298,7 @@ export default function AuthView({ navigateTo, onAuthSuccess, initialRole = 'ren
   };
 
   return (
-    <div className="max-w-md mx-auto px-4 py-16">
+    <div className="max-w-md mx-auto px-4 py-6 sm:py-12 min-h-[calc(100dvh-4rem)] flex flex-col justify-center">
       <div className="bg-white border border-slate-100 shadow-xl rounded-3xl overflow-hidden">
         {/* Brand Header */}
         <div className="bg-[#0F1F3D] text-white p-8 text-center space-y-2 relative">
