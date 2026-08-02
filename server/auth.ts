@@ -319,9 +319,22 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
       if (isNewAuthUser && userId && adminClient) {
         console.warn(`[Register Cleanup] Deleting newly created Auth user ${userId} due to SMTP failure.`);
         await adminClient.auth.admin.deleteUser(userId).catch(() => {});
+        try {
+          const q = adminClient.from('profiles');
+          if (q && typeof q.delete === 'function') {
+            await q.delete().eq('id', userId).catch(() => {});
+          }
+        } catch {
+          // Ignore mock delete failure in test mode
+        }
       }
-      res.status(502).json({
-        error: 'Failed to deliver verification email. Please verify your email address or try again later.'
+      const isMissingConfig = emailResult.code === 'MISSING_SMTP_CONFIG';
+      const statusCode = isMissingConfig ? 503 : 502;
+      res.status(statusCode).json({
+        error: isMissingConfig
+          ? 'Service Unavailable: Email delivery service is unconfigured. Please contact support.'
+          : 'Failed to deliver verification email. Please verify your email address or try again later.',
+        code: emailResult.code || 'SMTP_DELIVERY_FAILED'
       });
       return;
     }
@@ -674,7 +687,7 @@ authRouter.post('/resend-otp', async (req: Request, res: Response): Promise<void
       </div>
     `;
 
-    await sendEmail({
+    const emailResult = await sendEmail({
       to: email.trim(),
       subject: `${otpCode} is your new MyAngan Verification Code`,
       html: emailHtml,
@@ -682,6 +695,19 @@ authRouter.post('/resend-otp', async (req: Request, res: Response): Promise<void
       notificationType: 'registration_otp',
       metadata: { userId: user.id }
     });
+
+    if (!emailResult.success) {
+      console.error(`[Resend OTP Failure] Failed to send OTP to ${email}: ${emailResult.error}`);
+      const isMissingConfig = emailResult.code === 'MISSING_SMTP_CONFIG';
+      const statusCode = isMissingConfig ? 503 : 502;
+      res.status(statusCode).json({
+        error: isMissingConfig
+          ? 'Service Unavailable: Email delivery service is unconfigured. Please contact support.'
+          : 'Failed to deliver verification email. Please try again later.',
+        code: emailResult.code || 'SMTP_DELIVERY_FAILED'
+      });
+      return;
+    }
 
     res.status(200).json({ message: 'A fresh verification OTP has been sent successfully.' });
 
